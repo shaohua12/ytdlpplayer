@@ -213,6 +213,48 @@ class VideoInfoCommandTests(unittest.TestCase):
         )
 
 
+class BilibiliCommentFetchTests(unittest.TestCase):
+    def test_fetches_at_most_one_hundred_comments(self):
+        requested_pages = []
+        requested_oids = []
+
+        def fake_api(endpoint, query, referer):
+            requested_pages.append(query["pn"])
+            requested_oids.append(query["oid"])
+            first_comment = (query["pn"] - 1) * 20
+            return {
+                "replies": [
+                    {
+                        "content": {"message": f"Comment {index}"},
+                        "member": {"uname": f"User {index}"},
+                        "like": index + 1,
+                    }
+                    for index in range(first_comment, first_comment + 20)
+                ]
+            }
+
+        with patch.object(dlpplayer, "_bilibili_api_data", side_effect=fake_api):
+            comments = dlpplayer._fetch_bilibili_comments(
+                "https://www.bilibili.com/video/BV123",
+                {
+                    "id": "BV123",
+                    "_old_archive_ids": ["bilibili 123_part1"],
+                },
+            )
+        info = video_info_from_ytdlp(
+            {"title": "Bilibili clip", "vcodec": "h264", "comments": comments}
+        )
+
+        self.assertEqual(requested_pages, [1, 2, 3, 4, 5])
+        self.assertEqual(requested_oids, ["123"] * 5)
+        self.assertEqual(len(info.comments), 100)
+        self.assertEqual(
+            [comment.like_count for comment in info.comments],
+            list(range(100, 0, -1)),
+        )
+
+
+
 class VideoInformationTests(unittest.TestCase):
     def test_formats_unlabeled_title_resolution_and_duration(self):
         info = format_video_info("  Example title  ", 1920, 1080, 3665.9)

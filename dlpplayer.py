@@ -15,7 +15,8 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
+from urllib.request import Request, urlopen
 
 
 YTDLP_DEFAULT = Path(r"D:\bin\yt-dlp\yt-dlp.exe")
@@ -25,6 +26,8 @@ NODE_DEFAULT = Path(r"D:\bin\nodejs\node.exe")
 VIDEO_FORMAT_DEFAULT = "bv*[height<=1080]+ba/b[height<=1080]"
 YOUTUBE_COMMENT_FETCH_LIMIT = 100
 VIDEO_COMMENT_DISPLAY_LIMIT = 100
+BILIBILI_COMMENT_PAGE_SIZE = 20
+BILIBILI_COMMENT_TIMEOUT = 5
 OUTPUT_DEFAULT = Path(__file__).resolve().parent
 
 
@@ -282,6 +285,134 @@ def _metadata_text(value: object) -> str | None:
         return None
     text = " ".join(value.split())
     return text or None
+
+
+def _bilibili_api_data(
+    endpoint: str, query: dict[str, str | int], referer: str
+) -> dict[str, object] | None:
+    request = Request(
+        f"{endpoint}?{urlencode(query)}",
+        headers={"Referer": referer, "User-Agent": "Mozilla/5.0"},
+    )
+    try:
+        with urlopen(request, timeout=BILIBILI_COMMENT_TIMEOUT) as response:
+            payload = json.load(response)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("code") not in (None, 0, "0"):
+        return None
+    data = payload.get("data")
+    return data if isinstance(data, dict) else None
+
+
+
+def _bilibili_archive_aid(metadata: dict[str, object]) -> str | None:
+    archive_ids = metadata.get("_old_archive_ids")
+    if not isinstance(archive_ids, list):
+        return None
+    for archive_id in archive_ids:
+        if not isinstance(archive_id, str):
+            continue
+        match = re.fullmatch(
+            r"bilibili\s+(\d+)(?:_part\d+)?", archive_id, re.IGNORECASE
+        )
+        if match:
+            return match.group(1)
+    return None
+
+
+def _fetch_bilibili_comments(
+    url: str, metadata: dict[str, object]
+) -> list[dict[str, object]]:
+    video_id = _metadata_text(metadata.get("id"))
+    if video_id is None:
+        return []
+    try:
+        parsed_url = urlsplit(url)
+    except ValueError:
+        return []
+
+    host = (parsed_url.hostname or "").lower().rstrip(".")
+    referer = _metadata_text(metadata.get("webpage_url")) or url
+    is_bilibili_tv = host == "bilibili.tv" or host.endswith(".bilibili.tv")
+    if is_bilibili_tv:
+        endpoint = "https://api.bilibili.tv/reply/web/root"
+        page_start = 0
+        video_type = 3 if "/play/" in parsed_url.path.lower() else 1
+    else:
+        video_id = re.sub(r"_p\d+$", "", video_id)
+        video_query = (
+            {"aid": video_id[2:]}
+            if video_id.lower().startswith("av") and video_id[2:].isdigit()
+            else {"bvid": video_id}
+        )
+        aid = _bilibili_archive_aid(metadata)
+        if aid is None:
+            video_data = _bilibili_api_data(
+                "https://api.bilibili.com/x/web-interface/view", video_query, referer
+            )
+            aid = video_data.get("aid") if video_data else None
+        if aid is None:
+            return []
+        endpoint = "https://api.bilibili.com/x/v2/reply"
+        page_start = 1
+
+    comments = []
+    page_count = (
+        VIDEO_COMMENT_DISPLAY_LIMIT + BILIBILI_COMMENT_PAGE_SIZE - 1
+    ) // BILIBILI_COMMENT_PAGE_SIZE
+    for page in range(page_start, page_start + page_count):
+        if is_bilibili_tv:
+            query = {
+                "platform": "web",
+                "pn": page,
+                "ps": BILIBILI_COMMENT_PAGE_SIZE,
+                "oid": video_id,
+                "type": video_type,
+                "sort_type": 1,
+            }
+        else:
+            query = {
+                "pn": page,
+                "ps": BILIBILI_COMMENT_PAGE_SIZE,
+                "oid": aid,
+                "type": 1,
+                "jsonp": "jsonp",
+                "sort": 2,
+            }
+        page_data = _bilibili_api_data(endpoint, query, referer)
+        replies = page_data.get("replies") if page_data else None
+        if not isinstance(replies, list) or not replies:
+            break
+
+        pending = list(reversed(replies))
+        while pending and len(comments) < VIDEO_COMMENT_DISPLAY_LIMIT:
+            reply = pending.pop()
+            if not isinstance(reply, dict):
+                continue
+            content = reply.get("content")
+            text = content.get("message") if isinstance(content, dict) else None
+            if isinstance(text, str) and text.strip():
+                member = reply.get("member")
+                comments.append(
+                    {
+                        "text": text,
+                        "like_count": reply.get(
+                            "like_count" if is_bilibili_tv else "like"
+                        ),
+                        "author": (
+                            member.get("name" if is_bilibili_tv else "uname")
+                            if isinstance(member, dict)
+                            else None
+                        ),
+                    }
+                )
+            children = reply.get("replies")
+            if isinstance(children, list):
+                remaining = VIDEO_COMMENT_DISPLAY_LIMIT - len(comments)
+                pending.extend(reversed(children[:remaining]))
+
+    return comments
 
 
 def _ytdlp_comments(metadata: dict[str, object]) -> tuple[VideoComment, ...]:
@@ -619,6 +750,8 @@ def fetch_url_video_info(
         metadata = video_entry
     if not isinstance(metadata, dict):
         raise ValueError("yt-dlp returned invalid video information.")
+    if is_supported_url(url) and not is_youtube_url(url):
+        metadata["comments"] = _fetch_bilibili_comments(url, metadata)
     return video_info_from_ytdlp(metadata)
 
 
