@@ -24,11 +24,13 @@ window accepts HTTP(S) URLs for any site supported by yt-dlp; yt-dlp handles
 site extraction when mpv opens the link. You can also paste a link and press
 **Play in mpv**. The existing command-line subcommands remain available.
 
-The panel displays the title without a field prefix. URL details include available
-resolution, duration, format, codecs, frame rate, size, uploader, date, counts,
-categories, tags, and a short description. Local files show available format,
-codec, frame rate, and size details. For multiple local files, it describes the
-first file; URL metadata comes from yt-dlp and local metadata from ffprobe.
+The window title prompts "Drop a video, playlist, or link." The information
+panel shows the video title prominently and hides when mpv exits.
+URL details include resolution, duration, format, codecs, frame rate, size,
+uploader, date, counts, categories, tags, and a short description. Local files
+show available format, codec, frame rate, and size details. For multiple local
+files, it describes the first file; URL metadata comes from yt-dlp and local
+metadata from ffprobe.
 
 ## Download and play
 

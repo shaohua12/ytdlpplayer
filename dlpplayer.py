@@ -715,18 +715,12 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         return 1
 
     root = TkinterDnD.Tk()
-    root.title("DLPPlayer")
+    root.title("DLPPlayer — Drop a video, playlist, or link")
     root.geometry("600x460")
     root.minsize(460, 320)
 
     frame = ttk.Frame(root, padding=16)
     frame.pack(fill="both", expand=True)
-
-    ttk.Label(
-        frame,
-        text="Drop a video, playlist, or link",
-        font=("Segoe UI", 14, "bold"),
-    ).pack(anchor="w", pady=(0, 8))
 
     drop_area = tk.Label(
         frame,
@@ -751,9 +745,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     ttk.Label(
         info_frame,
         textvariable=video_title,
-        font=("Segoe UI", 12, "bold"),
+        font=("Segoe UI", 16, "bold"),
         wraplength=520,
-    ).pack(anchor="w")
+    ).pack(anchor="w", pady=(0, 6))
     ttk.Label(
         info_frame,
         textvariable=video_details,
@@ -798,7 +792,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         root.after(100, poll_video_info)
 
     root.after(100, poll_video_info)
-    status = tk.StringVar(value="Drop a video, playlist, or link to begin.")
+    status = tk.StringVar(value="Ready.")
     current_player: subprocess.Popen | None = None
 
     def check_player(player: subprocess.Popen) -> None:
@@ -808,6 +802,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             status.set("mpv is running; check its window for stream status.")
             root.after(2000, check_player, player)
         else:
+            clear_video_info()
             if player.returncode == 0:
                 status.set("mpv finished playback.")
             else:
