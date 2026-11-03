@@ -28,6 +28,7 @@ YOUTUBE_COMMENT_FETCH_LIMIT = 100
 VIDEO_COMMENT_DISPLAY_LIMIT = 100
 BILIBILI_COMMENT_PAGE_SIZE = 20
 BILIBILI_COMMENT_TIMEOUT = 5
+IDLE_WINDOW_MIN_HEIGHT = 150
 OUTPUT_DEFAULT = Path(__file__).resolve().parent
 
 
@@ -894,8 +895,8 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
 
     root = TkinterDnD.Tk()
     root.title("DLPPlayer — Drop a video, playlist, or link")
-    root.geometry("600x460")
-    root.minsize(460, 320)
+    root.geometry(f"600x{IDLE_WINDOW_MIN_HEIGHT}")
+    root.minsize(460, IDLE_WINDOW_MIN_HEIGHT)
 
     frame = ttk.Frame(root, padding=16)
     frame.pack(fill="both", expand=True)
@@ -962,7 +963,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
 
     def fit_window_height() -> None:
         root.update_idletasks()
-        height = max(root.winfo_reqheight(), 460)
+        height = max(root.winfo_reqheight(), IDLE_WINDOW_MIN_HEIGHT)
         root.geometry(f"{root.winfo_width()}x{height}")
 
     def clear_video_info() -> None:

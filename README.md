@@ -29,7 +29,7 @@ panel shows the video title prominently and hides when mpv exits.
 The panel shows up to 100 available URL comments in descending like-count
 order. Bilibili and YouTube retrieval are capped at 100; other sites are not
 forced to fetch comments. The comments box is omitted when none are available.
-The window grows to fit the panel and returns to its normal height after playback.
+The window shrinks to a compact idle height and grows to fit the panel during playback.
 URL details include resolution, duration, format, codecs, frame rate, size,
 uploader, date, counts, categories, tags, and a short description. Local files
 show available format, codec, frame rate, and size details. For multiple local
