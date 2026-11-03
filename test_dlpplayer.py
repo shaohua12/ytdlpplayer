@@ -12,6 +12,7 @@ from dlpplayer import (
     VIDEO_FORMAT_DEFAULT,
     build_download_command,
     build_mpv_url_command,
+    build_video_info_command,
     create_parser,
     extract_http_url,
     extract_local_paths,
@@ -189,6 +190,29 @@ class MpvUrlCommandTests(unittest.TestCase):
         self.assertFalse(any("js-runtimes" in item for item in command))
 
 
+class VideoInfoCommandTests(unittest.TestCase):
+    def test_requests_bounded_top_comments(self):
+        command = build_video_info_command(
+            "yt-dlp.exe",
+            "https://youtu.be/BaW_jenozKc",
+            node_runtime="node.exe",
+        )
+
+        self.assertIn("--write-comments", command)
+        self.assertEqual(
+            command[command.index("--extractor-args") + 1],
+            "youtube:comment_sort=top;max_comments=100",
+        )
+        bilibili_command = build_video_info_command(
+            "yt-dlp.exe", "https://www.bilibili.com/video/BV123"
+        )
+        self.assertIn("--no-write-comments", bilibili_command)
+        self.assertNotIn("--write-comments", bilibili_command)
+        self.assertGreater(
+            command.index("--write-comments"), command.index("--no-write-comments")
+        )
+
+
 class VideoInformationTests(unittest.TestCase):
     def test_formats_unlabeled_title_resolution_and_duration(self):
         info = format_video_info("  Example title  ", 1920, 1080, 3665.9)
@@ -248,6 +272,54 @@ class VideoInformationTests(unittest.TestCase):
                 "Tags: tag one · tag two",
                 "A video description.",
             ),
+        )
+
+    def test_sorts_and_limits_ytdlp_comments_by_like_count(self):
+        comments = [
+            {"text": f"Comment {likes}", "like_count": likes}
+            for likes in range(125)
+        ]
+        comments.extend(
+            [
+                {"text": "No like count"},
+                {"text": "Invalid likes", "like_count": "unknown"},
+                {"text": "Negative likes", "like_count": -10},
+                {"text": "   ", "like_count": 1000},
+                "invalid comment",
+            ]
+        )
+        info = video_info_from_ytdlp(
+            {"title": "Clip", "vcodec": "h264", "comments": comments}
+        )
+
+        self.assertEqual(len(info.comments), 100)
+        self.assertEqual(
+            [(comment.text, comment.like_count) for comment in info.comments],
+            [(f"Comment {likes}", likes) for likes in range(124, 24, -1)],
+        )
+
+    def test_sorts_unrated_ytdlp_comments_after_liked_comments(self):
+        comments = [
+            {"text": "Low", "like_count": 2},
+            {"text": "Top", "like_count": 12},
+            {"text": "Missing likes"},
+            {"text": "Invalid likes", "like_count": "unknown"},
+            {"text": "Negative likes", "like_count": -4},
+            {"text": "   ", "like_count": 1000},
+        ]
+        info = video_info_from_ytdlp(
+            {"title": "Clip", "vcodec": "h264", "comments": comments}
+        )
+
+        self.assertEqual(
+            [(comment.text, comment.like_count) for comment in info.comments],
+            [
+                ("Top", 12),
+                ("Low", 2),
+                ("Missing likes", 0),
+                ("Invalid likes", 0),
+                ("Negative likes", 0),
+            ],
         )
 
     def test_reads_local_video_stream_and_embedded_metadata(self):

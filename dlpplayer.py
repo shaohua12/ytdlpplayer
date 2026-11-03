@@ -23,6 +23,8 @@ MPV_DEFAULT = Path(r"D:\bin\mpv\mpv.exe")
 FFMPEG_DEFAULT = Path(r"D:\bin\ffmpeg\bin")
 NODE_DEFAULT = Path(r"D:\bin\nodejs\node.exe")
 VIDEO_FORMAT_DEFAULT = "bv*[height<=1080]+ba/b[height<=1080]"
+YOUTUBE_COMMENT_FETCH_LIMIT = 100
+VIDEO_COMMENT_DISPLAY_LIMIT = 100
 OUTPUT_DEFAULT = Path(__file__).resolve().parent
 
 
@@ -199,6 +201,7 @@ def build_video_info_command(
         yt_dlp,
         "--no-warnings",
         "--dump-single-json",
+        "--no-write-comments",
         "--skip-download",
         "--playlist-items",
         "1",
@@ -209,15 +212,29 @@ def build_video_info_command(
     ]
     if is_youtube_url(url):
         runtime = f"node:{node_runtime}" if node_runtime else "node"
-        command.extend(["--js-runtimes", runtime])
+        command.extend(["--write-comments", "--js-runtimes", runtime])
+        command.extend(
+            [
+                "--extractor-args",
+                f"youtube:comment_sort=top;max_comments={YOUTUBE_COMMENT_FETCH_LIMIT}",
+            ]
+        )
     command.append(url)
     return command
+
+
+@dataclass(frozen=True)
+class VideoComment:
+    text: str
+    like_count: int
+    author: str | None
 
 
 @dataclass(frozen=True)
 class VideoInfo:
     title: str
     details: tuple[str, ...]
+    comments: tuple[VideoComment, ...] = ()
 
 
 def format_video_info(
@@ -226,6 +243,7 @@ def format_video_info(
     height: object,
     duration: object,
     additional_details: tuple[str, ...] = (),
+    comments: tuple[VideoComment, ...] = (),
 ) -> VideoInfo:
     display_title = title.strip() if isinstance(title, str) else ""
     display_title = display_title or "Unknown"
@@ -256,7 +274,7 @@ def format_video_info(
         )
 
     details = ([" · ".join(summary)] if summary else []) + list(additional_details)
-    return VideoInfo(display_title, tuple(details))
+    return VideoInfo(display_title, tuple(details), comments)
 
 
 def _metadata_text(value: object) -> str | None:
@@ -264,6 +282,30 @@ def _metadata_text(value: object) -> str | None:
         return None
     text = " ".join(value.split())
     return text or None
+
+
+def _ytdlp_comments(metadata: dict[str, object]) -> tuple[VideoComment, ...]:
+    raw_comments = metadata.get("comments")
+    if not isinstance(raw_comments, list):
+        return ()
+
+    comments = []
+    for item in raw_comments:
+        if not isinstance(item, dict):
+            continue
+        text = _metadata_text(item.get("text"))
+        if text is None:
+            continue
+        try:
+            like_count = int(item.get("like_count") or 0)
+        except (TypeError, ValueError, OverflowError):
+            like_count = 0
+        comments.append(
+            VideoComment(text, max(0, like_count), _metadata_text(item.get("author")))
+        )
+
+    comments.sort(key=lambda comment: comment.like_count, reverse=True)
+    return tuple(comments[:VIDEO_COMMENT_DISPLAY_LIMIT])
 
 
 def _format_file_size(value: object) -> str | None:
@@ -474,6 +516,7 @@ def video_info_from_ytdlp(metadata: dict[str, object]) -> VideoInfo:
         _ytdlp_detail_lines(
             metadata, video_format, audio_format, selected_formats
         ),
+        _ytdlp_comments(metadata),
     )
 
 
@@ -704,7 +747,7 @@ def play(args: argparse.Namespace) -> int:
 def launch_gui(_args: argparse.Namespace | None = None) -> int:
     try:
         import tkinter as tk
-        from tkinter import messagebox, ttk
+        from tkinter import messagebox, scrolledtext, ttk
 
         from tkinterdnd2 import DND_ALL, TkinterDnD
     except ImportError as error:
@@ -756,8 +799,38 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         wraplength=520,
         justify="left",
     ).pack(fill="x", pady=(6, 0))
+    comments_frame = ttk.LabelFrame(info_frame, text="Most liked comments", padding=4)
+    comments_text = scrolledtext.ScrolledText(
+        comments_frame,
+        height=20,
+        wrap="word",
+        font=("Segoe UI", 9),
+        state="disabled",
+    )
+    comments_text.pack(fill="both", expand=True)
     metadata_results: queue.Queue[tuple[int, VideoInfo | None]] = queue.Queue()
     metadata_request = 0
+
+    def display_comments(comments: tuple[VideoComment, ...]) -> None:
+        comments_text.configure(state="normal")
+        comments_text.delete("1.0", tk.END)
+        for comment in comments:
+            author = f" · {comment.author}" if comment.author else ""
+            comments_text.insert(
+                tk.END,
+                f"{comment.like_count:,} likes{author}\n{comment.text}\n\n",
+            )
+        comments_text.configure(state="disabled")
+        if comments:
+            comments_frame.pack(fill="x", pady=(8, 0))
+        else:
+            comments_frame.pack_forget()
+
+
+    def fit_window_height() -> None:
+        root.update_idletasks()
+        height = max(root.winfo_reqheight(), 460)
+        root.geometry(f"{root.winfo_width()}x{height}")
 
     def clear_video_info() -> None:
         nonlocal metadata_request
@@ -765,6 +838,8 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         info_frame.pack_forget()
         video_title.set("")
         video_details.set("")
+        display_comments(())
+        fit_window_height()
 
     def request_video_info(loader: Callable[[], VideoInfo]) -> None:
         nonlocal metadata_request
@@ -790,7 +865,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 continue
             video_title.set(info.title)
             video_details.set("\n".join(info.details))
+            display_comments(info.comments)
             info_frame.pack(before=status_label, fill="x", pady=(10, 0))
+            fit_window_height()
         root.after(100, poll_video_info)
 
     root.after(100, poll_video_info)
