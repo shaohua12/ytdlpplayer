@@ -895,7 +895,12 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
 
     root = TkinterDnD.Tk()
     root.title("DLPPlayer — Drop a video, playlist, or link")
-    root.geometry(f"600x{IDLE_WINDOW_MIN_HEIGHT}")
+    window_width = 600
+    screen_width = root.winfo_screenwidth()
+    window_x = max(0, screen_width - window_width)
+    root.geometry(
+        f"{window_width}x{IDLE_WINDOW_MIN_HEIGHT}+{window_x}+0"
+    )
     root.minsize(460, IDLE_WINDOW_MIN_HEIGHT)
 
     frame = ttk.Frame(root, padding=16)
