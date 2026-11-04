@@ -921,7 +921,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     url_row.pack(fill="x")
     url_entry = ttk.Entry(url_row)
     url_entry.pack(side="left", fill="x", expand=True)
-    play_button = ttk.Button(url_row, text="Play in mpv")
+    play_button = ttk.Button(url_row, text="▶ Play in mpv")
     play_button.pack(side="right", padx=(8, 0))
 
     info_frame = ttk.LabelFrame(frame, text="Video information", padding=8)
@@ -1006,7 +1006,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             video_title.set(info.title)
             video_details.set("\n".join(info.details))
             display_comments(info.comments)
-            info_frame.pack(before=status_label, fill="x", pady=(10, 0))
+            info_frame.pack(before=status_row, fill="x", pady=(10, 0))
             fit_window_height()
         root.after(100, poll_video_info)
 
@@ -1014,13 +1014,28 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     status = tk.StringVar(value="Ready.")
     current_player: subprocess.Popen | None = None
 
+    def set_playback_lamp(available: bool, playing: bool = False) -> None:
+        if not available:
+            lamp_canvas.pack_forget()
+            return
+        lamp_canvas.itemconfigure(
+            lamp_playing, state="normal" if playing else "hidden"
+        )
+        lamp_canvas.itemconfigure(
+            lamp_stopped, state="hidden" if playing else "normal"
+        )
+        lamp_canvas.pack(side="left", before=status_label, padx=(0, 6))
+
+
     def check_player(player: subprocess.Popen) -> None:
         if player is not current_player:
             return
         if player.poll() is None:
+            set_playback_lamp(True, True)
             status.set("mpv is running; check its window for stream status.")
             root.after(2000, check_player, player)
         else:
+            set_playback_lamp(True, False)
             clear_video_info()
             if player.returncode == 0:
                 status.set("mpv finished playback.")
@@ -1032,6 +1047,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     def play_url(url: str) -> None:
         nonlocal current_player
         current_player = None
+        set_playback_lamp(False)
         clear_video_info()
         status.set("Validating URL...")
         root.update_idletasks()
@@ -1060,6 +1076,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             messagebox.showerror("Could not play URL", str(error), parent=root)
             return
         current_player = player
+        set_playback_lamp(True, player.poll() is None)
         request_video_info(lambda: fetch_url_video_info(yt_dlp, url, node_runtime))
         url_entry.delete(0, tk.END)
         url_entry.insert(0, url)
@@ -1069,6 +1086,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     def play_local_files(paths: tuple[Path, ...]) -> None:
         nonlocal current_player
         current_player = None
+        set_playback_lamp(False)
         clear_video_info()
         missing_path = next((path for path in paths if not path.is_file()), None)
         if missing_path is not None:
@@ -1088,6 +1106,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             messagebox.showerror("Could not play local media", str(error), parent=root)
             return
         current_player = player
+        set_playback_lamp(True, player.poll() is None)
         first_file = paths[0].resolve()
         request_video_info(
             lambda: fetch_local_video_info(resolve_ffprobe_tool(), first_file)
@@ -1120,8 +1139,27 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         play_url(url)
 
     play_button.configure(command=play_entry)
-    status_label = ttk.Label(frame, textvariable=status, wraplength=460)
-    status_label.pack(fill="x", pady=(10, 0))
+    status_row = ttk.Frame(frame)
+    status_row.pack(fill="x", pady=(10, 0))
+    status_label = ttk.Label(status_row, textvariable=status, wraplength=460)
+    status_label.pack(side="left", fill="x", expand=True)
+    lamp_background = (
+        ttk.Style(root).lookup("TFrame", "background") or root.cget("background")
+    )
+    lamp_canvas = tk.Canvas(
+        status_row,
+        width=18,
+        height=18,
+        borderwidth=0,
+        highlightthickness=0,
+        background=lamp_background,
+    )
+    lamp_playing = lamp_canvas.create_polygon(
+        4, 3, 15, 9, 4, 15, fill="#2e7d32", outline="#2e7d32", state="hidden"
+    )
+    lamp_stopped = lamp_canvas.create_rectangle(
+        4, 4, 14, 14, fill="#000000", outline="#000000", state="hidden"
+    )
     root.mainloop()
     return 0
 

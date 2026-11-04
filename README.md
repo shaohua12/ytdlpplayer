@@ -25,8 +25,10 @@ files. Dropped local files open directly in mpv; multiple files play in order.
 The GUI accepts HTTP(S) URLs supported by yt-dlp. You can also paste a link and
 press **Play in mpv**.
 
-The window title prompts "Drop a video, playlist, or link." The information
-panel shows the video title prominently and hides when mpv exits.
+The window title prompts "Drop a video, playlist, or link."
+The information panel shows the video title prominently and hides when mpv exits.
+The status bar shows a green play triangle while the mpv process runs and a solid
+black square after it stops.
 The panel shows up to 100 available URL comments in descending like-count
 order. Bilibili and YouTube retrieval are capped at 100; other sites are not
 forced to fetch comments. The comments box is omitted when none are available.
