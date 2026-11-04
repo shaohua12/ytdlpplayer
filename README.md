@@ -27,7 +27,7 @@ press **Play in mpv**.
 
 The window title prompts "Drop a video, playlist, or link."
 The information panel shows the video title prominently and hides when mpv exits.
-The status bar shows a green play triangle while the mpv process runs and a solid
+The status bar shows a black play triangle while the mpv process runs and a solid
 black square after it stops.
 The panel shows up to 100 available URL comments in descending like-count
 order. Bilibili and YouTube retrieval are capped at 100; other sites are not

@@ -1155,7 +1155,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         background=lamp_background,
     )
     lamp_playing = lamp_canvas.create_polygon(
-        4, 3, 15, 9, 4, 15, fill="#2e7d32", outline="#2e7d32", state="hidden"
+        4, 3, 15, 9, 4, 15, fill="#000000", outline="#000000", state="hidden"
     )
     lamp_stopped = lamp_canvas.create_rectangle(
         4, 4, 14, 14, fill="#000000", outline="#000000", state="hidden"
