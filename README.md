@@ -10,73 +10,77 @@ Install the GUI dependency once:
 python -m pip install -r .\requirements.txt
 ```
 
-Then run either command to open the drag-and-drop window:
+## GUI
+
+Launch the drag-and-drop window with either command:
 
 ```powershell
 python .\dlpplayer.py
 python .\dlpplayer.py gui
 ```
 
-Drag a video link or the URL from the browser address bar onto the window, or
-drop local video files and playlist files from disk. Dropped local files open
-directly in mpv; if you drop multiple files, mpv plays them in order. The
-window accepts HTTP(S) URLs for any site supported by yt-dlp; yt-dlp handles
-site extraction when mpv opens the link. You can also paste a link and press
-**Play in mpv**. The existing command-line subcommands remain available.
+With no arguments, the program opens the GUI. Drop a video link or the URL from
+the browser address bar onto the window, or drop local video files and playlist
+files. Dropped local files open directly in mpv; multiple files play in order.
+The GUI accepts HTTP(S) URLs supported by yt-dlp. You can also paste a link and
+press **Play in mpv**.
 
 The window title prompts "Drop a video, playlist, or link." The information
 panel shows the video title prominently and hides when mpv exits.
 The panel shows up to 100 available URL comments in descending like-count
 order. Bilibili and YouTube retrieval are capped at 100; other sites are not
 forced to fetch comments. The comments box is omitted when none are available.
-The window starts at the desktop's top-right corner, shrinks to a compact idle height,
-and grows to fit the panel during playback.
+The window starts 20 pixels from the desktop's top and right edges, shrinks to a
+compact idle height, and grows to fit the panel during playback.
 URL details include resolution, duration, format, codecs, frame rate, size,
 uploader, date, counts, categories, tags, and a short description. Local files
 show available format, codec, frame rate, and size details. For multiple local
 files, it describes the first file; URL metadata comes from yt-dlp and local
 metadata from ffprobe.
 
-## Download and play
+## Command-line usage
+
+```powershell
+python .\dlpplayer.py download <URL> [options]
+python .\dlpplayer.py play <FILE> [--mpv PATH]
+```
+
+`download` accepts one Bilibili or YouTube video URL. It downloads into the
+directory containing `dlpplayer.py` by default, names the file using its title
+and video ID, and merges the output into MP4. Use `--play` to open the completed
+download in mpv. `-o`/`--output-dir` selects another download directory.
 
 ```powershell
 python .\dlpplayer.py download "https://www.bilibili.com/video/BV..." --play
-python .\dlpplayer.py download "https://www.youtube.com/watch?v=..." --play
+python .\dlpplayer.py download "https://www.youtube.com/watch?v=..." -o "D:\Videos" -f "bv*[height<=480]+ba/b"
+python .\dlpplayer.py play "D:\Videos\video.mp4"
 ```
 
-By default the program asks yt-dlp to read Firefox's default-profile cookies,
-saves the video beside `dlpplayer.py` in the project workspace, and uses these
-installations:
+Download options:
 
-- `D:\bin\yt-dlp\yt-dlp.exe`
-- `D:\bin\ffmpeg\bin`
-- `D:\bin\mpv\mpv.exe`
-- `D:\bin\nodejs\node.exe` (YouTube JavaScript challenge support)
+- `-o`, `--output-dir DIR`: download directory; defaults to the directory
+  containing `dlpplayer.py`.
+- `-f`, `--format SELECTOR`: yt-dlp format selector; defaults to the best
+  video up to 1080p plus audio.
+- `--play`: play the downloaded file with mpv after the download succeeds.
+- `--firefox-profile NAME_OR_PATH`: use the selected Firefox profile. By
+  default yt-dlp reads cookies from Firefox's default profile.
+- `--no-cookies`: do not read Firefox cookies.
+- `--yt-dlp PATH`, `--ffmpeg PATH`, `--mpv PATH`: override tool locations;
+  `--ffmpeg` may be an executable or its containing directory.
+- `--node PATH`: Node.js executable for YouTube JavaScript challenge support.
 
-Downloads and mpv playback default to video formats no higher than
-1080p. Use `-f` to select a lower resolution when downloading.
-Firefox cookies are passed directly to yt-dlp using its
-`--cookies-from-browser firefox` option. This project does not export, copy, or
-store the cookie database. Firefox profile names or paths can be selected with
-`--firefox-profile`; use `--no-cookies` for videos that do not need login.
-For YouTube, yt-dlp is configured to use Node.js for its JavaScript challenge
-support. The default Node.js path is `D:\bin\nodejs\node.exe`; override it with
-`--node` or the `DLPPLAYER_NODE` environment variable. A format selector can be
-passed with `-f`, for example: `-f "bv*[height<=480]+ba/b"`.
+The default tool locations are `D:\bin\yt-dlp\yt-dlp.exe`,
+`D:\bin\ffmpeg\bin`, `D:\bin\mpv\mpv.exe`, and
+`D:\bin\nodejs\node.exe` (YouTube). Set `DLPPLAYER_YTDLP`,
+`DLPPLAYER_FFMPEG`, `DLPPLAYER_MPV`, or `DLPPLAYER_NODE` to override the
+corresponding default; command-line paths take precedence.
 
-Examples:
+Firefox cookies are passed directly to yt-dlp; this project does not export,
+copy, or store the cookie database. Keep the Firefox profile private and do not
+share it.
 
-```powershell
-python .\dlpplayer.py download "https://www.bilibili.com/video/BV..." -o "D:\Videos\Bili"
-python .\dlpplayer.py download "https://www.bilibili.com/video/BV..." --firefox-profile "default-release" --play
-python .\dlpplayer.py play "D:\Videos\Bili\video.mp4"
-```
-
-If the tools are installed elsewhere, pass `--yt-dlp`, `--ffmpeg`, and `--mpv`
-paths or set `DLPPLAYER_YTDLP`, `DLPPLAYER_FFMPEG`, and `DLPPLAYER_MPV`.
-
-Only download videos you own or are authorized to save. Browser cookies grant
-account access; keep the Firefox profile private and do not share it.
+Only download videos you own or are authorized to save.
 
 ## Tests
 

@@ -897,9 +897,10 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     root.title("DLPPlayer — Drop a video, playlist, or link")
     window_width = 600
     screen_width = root.winfo_screenwidth()
-    window_x = max(0, screen_width - window_width)
+    window_margin = 20
+    window_x = max(0, screen_width - window_width - window_margin)
     root.geometry(
-        f"{window_width}x{IDLE_WINDOW_MIN_HEIGHT}+{window_x}+0"
+        f"{window_width}x{IDLE_WINDOW_MIN_HEIGHT}+{window_x}+{window_margin}"
     )
     root.minsize(460, IDLE_WINDOW_MIN_HEIGHT)
 
