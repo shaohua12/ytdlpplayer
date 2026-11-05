@@ -1464,6 +1464,14 @@ def fetch_playlist_episodes(
     return _fetch_playlist_episodes(yt_dlp, url, node_runtime)
 
 
+def _playlist_episode_at_position(
+    episodes: tuple[PlaylistEpisode, ...], position: object
+) -> PlaylistEpisode | None:
+    if type(position) is not int or not 0 <= position < len(episodes):
+        return None
+    return episodes[position]
+
+
 def read_local_playlist_episodes(
     playlist_file: Path,
 ) -> tuple[PlaylistEpisode, ...] | None:
@@ -2005,6 +2013,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     status = tk.StringVar(value="Ready.")
     current_player: subprocess.Popen | None = None
     current_player_ipc_server: str | None = _mpv_ipc_server_path()
+    active_playing_episodes: tuple[PlaylistEpisode, ...] = ()
+    active_playlist_position: int | None = None
+    active_playlist_offset = 0
 
     def stop_current_player() -> None:
         nonlocal current_player, current_player_ipc_server
@@ -2067,12 +2078,42 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         )
         lamp_canvas.pack(side="left", before=status_label, padx=(0, 6))
 
+    def track_active_playlist(
+        episodes: tuple[PlaylistEpisode, ...],
+        position: int = 0,
+        offset: int = 0,
+        request_info: bool = True,
+    ) -> None:
+        nonlocal active_playing_episodes, active_playlist_position
+        nonlocal active_playlist_offset
+        active_playing_episodes = episodes
+        active_playlist_offset = offset
+        active_playlist_position = (
+            position if _playlist_episode_at_position(episodes, position) else None
+        )
+        if request_info and active_playlist_position is not None:
+            request_playlist_episode_info(episodes[active_playlist_position])
+
+    def update_current_episode_info() -> None:
+        nonlocal active_playlist_position
+        if current_player_ipc_server is None or not active_playing_episodes:
+            return
+        position = _mpv_property_value(current_player_ipc_server, "playlist-pos")
+        episode = _playlist_episode_at_position(active_playing_episodes, position)
+        if episode is None or position == active_playlist_position:
+            return
+        active_playlist_position = position
+        display_position = active_playlist_offset + position
+        if 0 <= display_position < len(playlist_episodes):
+            episode_combo.current(display_position)
+        request_playlist_episode_info(episode)
 
     def check_player(player: subprocess.Popen | None) -> None:
         nonlocal current_player, current_player_ipc_server, radio_mix_active
         if player is not current_player:
             return
         if player is None:
+            update_current_episode_info()
             ipc_server = current_player_ipc_server
             playback_status = (
                 _mpv_status_text(ipc_server, video_title.get())
@@ -2097,6 +2138,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             play_button.configure(state="normal")
             return
         if player.poll() is None:
+            update_current_episode_info()
             playback_status = (
                 _mpv_status_text(current_player_ipc_server, video_title.get())
                 if current_player_ipc_server is not None
@@ -2163,7 +2205,12 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             stop_button.configure(state="normal")
             set_playback_lamp(True, True)
             if _youtube_playlist_url(url) is None:
+                track_active_playlist(
+                    (PlaylistEpisode("Video", url),), request_info=False
+                )
                 request_playlist_episode_info(PlaylistEpisode("Video", url))
+            else:
+                track_active_playlist((), request_info=False)
             url_entry.delete(0, tk.END)
             url_entry.insert(0, display_url)
             status.set("MPV switched to the requested video.")
@@ -2203,9 +2250,14 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         stop_button.configure(state="normal")
         set_playback_lamp(True, player.poll() is None)
         if _youtube_playlist_url(url) is None:
+            track_active_playlist(
+                (PlaylistEpisode("Video", url),), request_info=False
+            )
             request_video_info(
                 lambda: fetch_url_video_info(yt_dlp, url, node_runtime)
             )
+        else:
+            track_active_playlist((), request_info=False)
         url_entry.delete(0, tk.END)
         url_entry.insert(0, display_url)
         status.set("mpv started successfully; yt-dlp is resolving the stream.")
@@ -2253,7 +2305,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 url_entry.delete(0, tk.END)
                 url_entry.insert(0, display_url)
                 clear_video_info()
-                request_playlist_episode_info(first_episode)
+                track_active_playlist(episodes, offset=start_index)
                 if current_player is None:
                     root.after(2000, check_player, None)
                 status.set(
@@ -2320,6 +2372,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         set_playback_lamp(True, player.poll() is None)
         url_entry.delete(0, tk.END)
         url_entry.insert(0, display_url)
+        track_active_playlist(episodes, offset=start_index, request_info=False)
         request_playlist_episode_info(first_episode, yt_dlp, node_runtime)
         status.set(
             f"mpv started; playing {first_episode.title}; "
@@ -2527,6 +2580,15 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             show_playlist_episodes(episodes)
             if playlist_playing_url != url:
                 start_playlist_playback(url)
+            else:
+                current_position = (
+                    _mpv_property_value(current_player_ipc_server, "playlist-pos")
+                    if current_player_ipc_server is not None
+                    else None
+                )
+                if _playlist_episode_at_position(episodes, current_position) is None:
+                    current_position = 0
+                track_active_playlist(episodes, position=current_position)
 
 
         while True:
@@ -2641,6 +2703,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             if reused:
                 stop_button.configure(state="normal")
                 set_playback_lamp(True, True)
+                track_active_playlist(local_episodes, request_info=False)
                 first_file = paths[0].resolve()
                 request_video_info(
                     lambda: fetch_local_video_info(
@@ -2677,6 +2740,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         current_player_ipc_server = ipc_server
         stop_button.configure(state="normal")
         set_playback_lamp(True, player.poll() is None)
+        track_active_playlist(local_episodes, request_info=False)
         first_file = paths[0].resolve()
         request_video_info(
             lambda: fetch_local_video_info(resolve_ffprobe_tool(), first_file)

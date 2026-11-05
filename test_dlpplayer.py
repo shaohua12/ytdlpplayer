@@ -564,6 +564,19 @@ class VideoInfoCommandTests(unittest.TestCase):
 
 
 class PlaylistEpisodeTests(unittest.TestCase):
+    def test_maps_mpv_playlist_position_to_episode(self):
+        episodes = (
+            dlpplayer.PlaylistEpisode("First", "https://media.example/1"),
+            dlpplayer.PlaylistEpisode("Second", "https://media.example/2"),
+        )
+
+        self.assertEqual(
+            dlpplayer._playlist_episode_at_position(episodes, 1), episodes[1]
+        )
+        self.assertIsNone(dlpplayer._playlist_episode_at_position(episodes, -1))
+        self.assertIsNone(dlpplayer._playlist_episode_at_position(episodes, 2))
+        self.assertIsNone(dlpplayer._playlist_episode_at_position(episodes, True))
+
     def test_suggests_meaningful_playlist_filenames(self):
         episodes = (
             dlpplayer.PlaylistEpisode("My: Show / Episode 1", "https://example.com/1"),
