@@ -415,6 +415,41 @@ class PlaylistEpisodeTests(unittest.TestCase):
             ),
         )
 
+    def test_omits_unavailable_playlist_videos(self):
+        playlist_url = "https://www.youtube.com/playlist?list=PL123"
+        result = SimpleNamespace(
+            returncode=0,
+            stdout=(
+                '{"entries":[{"id":"available","availability":"public",'
+                '"title":"Available"},'
+                '{"id":"blocked","availability":"unavailable",'
+                '"title":"Unavailable"},'
+                '{"id":"auth","availability":"needs_auth",'
+                '"title":"Sign in required"}]}'
+            ),
+            stderr="",
+        )
+        with patch.object(dlpplayer.subprocess, "run", return_value=result):
+            episodes = dlpplayer.fetch_playlist_episodes("yt-dlp.exe", playlist_url)
+
+        self.assertEqual(
+            episodes,
+            (
+                dlpplayer.PlaylistEpisode(
+                    "Available", "https://www.youtube.com/watch?v=available"
+                ),
+            ),
+        )
+
+        result.stdout = (
+            '{"entries":[{"id":"blocked","availability":"unavailable",'
+            '"title":"Unavailable"}]}'
+        )
+        with patch.object(dlpplayer.subprocess, "run", return_value=result):
+            self.assertEqual(
+                dlpplayer.fetch_playlist_episodes("yt-dlp.exe", playlist_url), ()
+            )
+
     def test_builds_playable_url_for_bilibili_episode_id(self):
         result = SimpleNamespace(
             returncode=0,

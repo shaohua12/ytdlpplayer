@@ -1055,6 +1055,12 @@ def _fetch_playlist_episodes(
     for index, entry in enumerate(entries, start=1):
         if not isinstance(entry, dict):
             continue
+        availability = entry.get("availability")
+        if isinstance(availability, str) and availability.lower() in {
+            "needs_auth",
+            "unavailable",
+        }:
+            continue
         episode_url = None
         for key in ("webpage_url", "original_url", "url"):
             candidate = entry.get(key)
