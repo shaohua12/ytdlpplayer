@@ -47,6 +47,11 @@ OUTPUT_DEFAULT = Path(__file__).resolve().parent
 @dataclass(frozen=True)
 class AppSettings:
     max_allowed_resolution: int | None = DEFAULT_MAX_ALLOWED_RESOLUTION
+    yt_dlp_path: Path | None = YTDLP_DEFAULT
+    mpv_path: Path | None = MPV_DEFAULT
+    ffmpeg_path: Path | None = FFMPEG_DEFAULT
+    node_path: Path | None = NODE_DEFAULT
+    python_library_path: Path | None = None
 
     @property
     def video_format(self) -> str:
@@ -56,6 +61,30 @@ class AppSettings:
             f"bv*[height<={self.max_allowed_resolution}]+ba/"
             f"b[height<={self.max_allowed_resolution}]"
         )
+
+
+def _settings_path_value(
+    data: dict[str, object],
+    key: str,
+    default: Path | None,
+    settings_path: Path,
+) -> Path | None:
+    if key not in data:
+        return default
+    value = data[key]
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        print(
+            f"Warning: {key} in {settings_path} must be a path string or null. "
+            "Using its default.",
+            file=sys.stderr,
+        )
+        return default
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = settings_path.resolve().parent / candidate
+    return candidate
 
 
 def load_settings(settings_path: Path = SETTINGS_PATH) -> AppSettings:
@@ -88,12 +117,41 @@ def load_settings(settings_path: Path = SETTINGS_PATH) -> AppSettings:
             "Using the default setting.",
             file=sys.stderr,
         )
-        return AppSettings()
-    return AppSettings(max_allowed_resolution=max_resolution)
+        max_resolution = DEFAULT_MAX_ALLOWED_RESOLUTION
+
+    return AppSettings(
+        max_allowed_resolution=max_resolution,
+        yt_dlp_path=_settings_path_value(data, "yt_dlp_path", YTDLP_DEFAULT, settings_path),
+        mpv_path=_settings_path_value(data, "mpv_path", MPV_DEFAULT, settings_path),
+        ffmpeg_path=_settings_path_value(data, "ffmpeg_path", FFMPEG_DEFAULT, settings_path),
+        node_path=_settings_path_value(data, "node_path", NODE_DEFAULT, settings_path),
+        python_library_path=_settings_path_value(
+            data, "python_library_path", None, settings_path
+        ),
+    )
+
+
+def _add_python_library_path(path: Path | None) -> None:
+    if path is None:
+        return
+    if not path.is_dir():
+        print(
+            f"Warning: Python library directory was not found: {path}",
+            file=sys.stderr,
+        )
+        return
+    resolved = str(path.resolve())
+    if resolved not in sys.path:
+        sys.path.insert(0, resolved)
 
 
 SETTINGS = load_settings()
+YTDLP_DEFAULT = SETTINGS.yt_dlp_path
+MPV_DEFAULT = SETTINGS.mpv_path
+FFMPEG_DEFAULT = SETTINGS.ffmpeg_path
+NODE_DEFAULT = SETTINGS.node_path
 VIDEO_FORMAT_DEFAULT = SETTINGS.video_format
+_add_python_library_path(SETTINGS.python_library_path)
 
 
 URL_PATTERN = re.compile(r"https?://[^\s{}<>\"']+", re.IGNORECASE)
@@ -216,7 +274,7 @@ def extract_local_paths(
 def resolve_tool(
     option: str | None,
     environment_name: str,
-    default: Path,
+    default: Path | None,
     name: str,
     allow_directory: bool = False,
 ) -> str:
@@ -230,7 +288,9 @@ def resolve_tool(
             return located
         raise FileNotFoundError(f"{name} was not found at {configured!r}.")
 
-    if default.is_file() or (allow_directory and default.is_dir()):
+    if default is not None and (
+        default.is_file() or (allow_directory and default.is_dir())
+    ):
         return str(default)
     located = shutil.which(name)
     if located:

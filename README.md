@@ -100,17 +100,22 @@ Download options:
   `--ffmpeg` may be an executable or its containing directory.
 - `--node PATH`: Node.js executable for YouTube JavaScript challenge support.
 
-DLPPlayer reads `dlpplayer.json` beside `dlpplayer.py` at startup. The default
-file sets `max_allowed_resolution` to `1080`; change it to another positive
+DLPPlayer reads `dlpplayer.json` beside `dlpplayer.py` at startup. The file
+sets `max_allowed_resolution` to `1080` by default; change it to another positive
 height (for example `720`) to cap yt-dlp selections for playback and downloads.
 Set it to `null` to remove the height cap. The download `-f` option still
 provides a per-command override.
 
-The default tool locations are `D:\bin\yt-dlp\yt-dlp.exe`,
-`D:\bin\ffmpeg\bin`, `D:\bin\mpv\mpv.exe`, and
-`D:\bin\nodejs\node.exe` (YouTube). Set `DLPPLAYER_YTDLP`,
-`DLPPLAYER_FFMPEG`, `DLPPLAYER_MPV`, or `DLPPLAYER_NODE` to override the
-corresponding default; command-line paths take precedence.
+Tool locations are configurable with `yt_dlp_path`, `mpv_path`, `ffmpeg_path`,
+and `node_path`. Values may be absolute paths or paths relative to
+`dlpplayer.json`; set one to `null` to find that tool on `PATH`. Command-line
+overrides take precedence over environment variables, which take precedence over
+the JSON settings. The default paths are `D:\bin\yt-dlp\yt-dlp.exe`,
+`D:\bin\mpv\mpv.exe`, `D:\bin\ffmpeg\bin`, and `D:\bin\nodejs\node.exe`.
+
+`python_library_path` optionally points to a directory containing Python
+packages such as `tkinterdnd2`. It may also be relative to `dlpplayer.json`; leave
+it `null` to use the current Python environment.
 
 Firefox cookies are passed directly to yt-dlp; this project does not export,
 copy, or store the cookie database. Keep the Firefox profile private and do not

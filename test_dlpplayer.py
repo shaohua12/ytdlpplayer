@@ -65,6 +65,39 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.max_allowed_resolution, 1080)
         self.assertEqual(settings.video_format, VIDEO_FORMAT_DEFAULT)
 
+    def test_reads_relative_tool_and_python_library_paths(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "vendor").mkdir()
+            settings_path = root / "dlpplayer.json"
+            settings_path.write_text(
+                '{"yt_dlp_path":"tools/yt-dlp.exe", "mpv_path":null, '
+                '"ffmpeg_path":"tools/ffmpeg", "node_path":"node/node.exe", '
+                '"python_library_path":"vendor"}',
+                encoding="utf-8",
+            )
+
+            settings = load_settings(settings_path)
+            self.assertEqual(settings.yt_dlp_path, root / "tools/yt-dlp.exe")
+            self.assertIsNone(settings.mpv_path)
+            self.assertEqual(settings.ffmpeg_path, root / "tools/ffmpeg")
+            self.assertEqual(settings.node_path, root / "node/node.exe")
+            self.assertEqual(settings.python_library_path, root / "vendor")
+
+            with patch.object(dlpplayer.sys, "path", ["existing"]):
+                dlpplayer._add_python_library_path(settings.python_library_path)
+                self.assertEqual(
+                    dlpplayer.sys.path,
+                    [str((root / "vendor").resolve()), "existing"],
+                )
+
+    def test_null_tool_path_uses_path_lookup(self):
+        with patch.object(dlpplayer.shutil, "which", return_value="mpv.exe") as which:
+            resolved = dlpplayer.resolve_tool(None, "DLPPLAYER_MPV", None, "mpv")
+
+        self.assertEqual(resolved, "mpv.exe")
+        which.assert_called_once_with("mpv")
+
 
 class HttpUrlTests(unittest.TestCase):
 
