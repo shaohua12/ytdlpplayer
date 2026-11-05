@@ -242,11 +242,25 @@ class MpvProgressTests(unittest.TestCase):
         with patch.object(
             dlpplayer,
             "_mpv_property_value",
-            side_effect=[False, 65, 300, False],
+            side_effect=[False, 65, 300, False, "Example episode"],
         ):
             status = dlpplayer._mpv_status_text("ipc")
 
-        self.assertEqual(status, "Playing | 1:05 / 5:00 (22%)")
+        self.assertEqual(
+            status, "Example episode | Playing | 1:05 / 5:00 (22%)"
+        )
+
+    def test_uses_fallback_title_when_mpv_title_is_a_url(self):
+        with patch.object(
+            dlpplayer,
+            "_mpv_property_value",
+            side_effect=[False, 65, 300, False, "https://example.com/video"],
+        ):
+            status = dlpplayer._mpv_status_text("ipc", "Useful metadata title")
+
+        self.assertEqual(
+            status, "Useful metadata title | Playing | 1:05 / 5:00 (22%)"
+        )
 
     def test_reports_idle_player_as_ready(self):
         with patch.object(dlpplayer, "_mpv_property_value", return_value=True) as prop:

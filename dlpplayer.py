@@ -481,7 +481,16 @@ def _format_mpv_progress(
     return f"{state} | {position_text} / {duration_text} ({progress}%)"
 
 
-def _mpv_status_text(server: str) -> str | None:
+def _meaningful_mpv_title(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    title = " ".join(value.split())
+    if not title or title.casefold() in {"mpv", "unknown"} or is_http_url(title):
+        return None
+    return title[:100].rstrip()
+
+
+def _mpv_status_text(server: str, fallback_title: str | None = None) -> str | None:
     idle_active = _mpv_property_value(server, "idle-active")
     if idle_active is True:
         return "MPV is ready."
@@ -495,7 +504,11 @@ def _mpv_status_text(server: str) -> str | None:
         time_position = _mpv_property_value(server, "time-pos")
         duration = _mpv_property_value(server, "duration")
     paused = _mpv_property_value(server, "pause") is True
-    return _format_mpv_progress(time_position, duration, paused)
+    title = _meaningful_mpv_title(
+        _mpv_property_value(server, "media-title")
+    ) or _meaningful_mpv_title(fallback_title)
+    progress = _format_mpv_progress(time_position, duration, paused)
+    return f"{title} | {progress}" if title else progress
 
 
 def build_video_info_command(
@@ -1989,7 +2002,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         if player is None:
             ipc_server = current_player_ipc_server
             playback_status = (
-                _mpv_status_text(ipc_server) if ipc_server is not None else None
+                _mpv_status_text(ipc_server, video_title.get())
+                if ipc_server is not None
+                else None
             )
             if playback_status is not None:
                 idle = playback_status == "MPV is ready."
@@ -2006,7 +2021,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             return
         if player.poll() is None:
             playback_status = (
-                _mpv_status_text(current_player_ipc_server)
+                _mpv_status_text(current_player_ipc_server, video_title.get())
                 if current_player_ipc_server is not None
                 else None
             )
