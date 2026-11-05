@@ -751,6 +751,76 @@ class PlaylistEpisodeTests(unittest.TestCase):
             ),
         )
 
+    def test_lists_single_page_bilibili_video_as_one_episode(self):
+        url = (
+            "https://www.bilibili.com/video/"
+            "BV1VZWc6dECG/?spm_id_from=333.337.search-card.all.click"
+        )
+        html = (
+            '<script>window.__INITIAL_STATE__={"videoData":{"pages":['
+            '{"page":1,"part":"Season 1 compilation","duration":3297}]}};</script>'
+        )
+
+        class FakeResponse(BytesIO):
+            headers = {"Content-Encoding": "identity"}
+
+        with patch(
+            "dlpplayer.urlopen", return_value=FakeResponse(html.encode("utf-8"))
+        ) as open_page:
+            with patch.object(dlpplayer.subprocess, "run") as run:
+                episodes = dlpplayer.fetch_playlist_episodes("yt-dlp.exe", url)
+
+        self.assertEqual(
+            episodes,
+            (
+                dlpplayer.PlaylistEpisode(
+                    "Season 1 compilation",
+                    "https://www.bilibili.com/video/BV1VZWc6dECG?p=1",
+                    3297,
+                ),
+            ),
+        )
+        open_page.assert_called_once()
+        run.assert_not_called()
+
+    def test_reads_bilibili_ugc_season_and_selects_current_episode(self):
+        url = "https://www.bilibili.com/video/BVcurrent/?spm_id_from=search"
+        html = (
+            '<script>window.__INITIAL_STATE__={"videoData":'
+            '{"pages":[{"page":1,"part":"Current video","duration":90}],'
+            '"ugc_season":{"sections":[{"episodes":['
+            '{"bvid":"BVfirst","title":"Episode one",'
+            '"arc":{"duration":60}},'
+            '{"bvid":"BVcurrent","title":"Episode two",'
+            '"arc":{"duration":90}},'
+            '{"bvid":"BVlast","title":"Episode three",'
+            '"arc":{"duration":120}}]}]}}};</script>'
+        )
+
+        class FakeResponse(BytesIO):
+            headers = {"Content-Encoding": "identity"}
+
+        with patch(
+            "dlpplayer.urlopen", return_value=FakeResponse(html.encode("utf-8"))
+        ):
+            episodes = dlpplayer.fetch_playlist_episodes("yt-dlp.exe", url)
+
+        self.assertEqual(
+            episodes,
+            (
+                dlpplayer.PlaylistEpisode(
+                    "Episode one", "https://www.bilibili.com/video/BVfirst", 60
+                ),
+                dlpplayer.PlaylistEpisode(
+                    "Episode two", "https://www.bilibili.com/video/BVcurrent", 90
+                ),
+                dlpplayer.PlaylistEpisode(
+                    "Episode three", "https://www.bilibili.com/video/BVlast", 120
+                ),
+            ),
+        )
+        self.assertEqual(dlpplayer._playlist_start_index(url, episodes), 1)
+
     def test_reads_bilibili_part_titles_and_durations(self):
         url = "https://www.bilibili.com/video/BV14tsEzVEub/"
         html = (

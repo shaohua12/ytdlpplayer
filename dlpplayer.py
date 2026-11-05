@@ -843,6 +843,87 @@ def _playlist_episode_label(index: int, episode: PlaylistEpisode) -> str:
     return f"{label}  {duration}" if duration else label
 
 
+def _bilibili_ugc_season_episodes(
+    video_data: dict[str, object],
+) -> tuple[PlaylistEpisode, ...] | None:
+    season = video_data.get("ugc_season")
+    sections = season.get("sections") if isinstance(season, dict) else None
+    if not isinstance(sections, list):
+        return None
+
+    episodes = []
+    seen_targets = set()
+    for section in sections:
+        section_episodes = section.get("episodes") if isinstance(section, dict) else None
+        if not isinstance(section_episodes, list):
+            continue
+        for item in section_episodes:
+            if not isinstance(item, dict):
+                continue
+            bvid = item.get("bvid")
+            aid = item.get("aid")
+            if isinstance(bvid, str) and re.fullmatch(
+                r"BV[A-Za-z0-9]+", bvid.strip(), re.IGNORECASE
+            ):
+                video_id = bvid.strip()
+            elif isinstance(aid, (int, str)) and str(aid).isdecimal():
+                video_id = f"av{aid}"
+            else:
+                continue
+            target = f"https://www.bilibili.com/video/{video_id}"
+            if target.casefold() in seen_targets:
+                continue
+            seen_targets.add(target.casefold())
+
+            arc = item.get("arc") if isinstance(item.get("arc"), dict) else {}
+            page = item.get("page") if isinstance(item.get("page"), dict) else {}
+            title = item.get("title") or arc.get("title") or page.get("part")
+            if not isinstance(title, str) or not title.strip():
+                title = f"Episode {len(episodes) + 1}"
+            duration = arc.get("duration") or page.get("duration")
+            episodes.append(
+                PlaylistEpisode(
+                    title.strip(), target, _duration_seconds(duration)
+                )
+            )
+    return tuple(episodes) if episodes else None
+
+
+def _playlist_start_index(
+    url: str, episodes: tuple[PlaylistEpisode, ...]
+) -> int:
+    try:
+        parsed_url = urlsplit(url)
+    except ValueError:
+        return 0
+    video_match = re.fullmatch(
+        r"/video/(BV[A-Za-z0-9]+|av\d+)/?", parsed_url.path, re.IGNORECASE
+    )
+    if video_match is None:
+        return 0
+    video_id = video_match.group(1).casefold()
+    requested_page = parse_qs(parsed_url.query).get("p", [None])[0]
+    first_match = None
+    for index, episode in enumerate(episodes):
+        try:
+            episode_url = urlsplit(episode.target)
+        except ValueError:
+            continue
+        episode_match = re.fullmatch(
+            r"/video/(BV[A-Za-z0-9]+|av\d+)/?", episode_url.path, re.IGNORECASE
+        )
+        if episode_match is None or episode_match.group(1).casefold() != video_id:
+            continue
+        if first_match is None:
+            first_match = index
+        if requested_page is None:
+            return index
+        episode_page = parse_qs(episode_url.query).get("p", [None])[0]
+        if episode_page == requested_page:
+            return index
+    return first_match if first_match is not None else 0
+
+
 def _fetch_bilibili_video_episodes(
     url: str,
 ) -> tuple[PlaylistEpisode, ...] | None:
@@ -883,8 +964,12 @@ def _fetch_bilibili_video_episodes(
         return None
 
     video_data = state.get("videoData") if isinstance(state, dict) else None
+    if isinstance(video_data, dict):
+        season_episodes = _bilibili_ugc_season_episodes(video_data)
+        if season_episodes:
+            return season_episodes
     pages = video_data.get("pages") if isinstance(video_data, dict) else None
-    if not isinstance(pages, list) or len(pages) <= 1:
+    if not isinstance(pages, list) or not pages:
         return None
 
     episodes = []
@@ -2579,7 +2664,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             loaded_playlist_path = None
             show_playlist_episodes(episodes)
             if playlist_playing_url != url:
-                start_playlist_playback(url)
+                start_playlist_playback(url, _playlist_start_index(url, episodes))
             else:
                 current_position = (
                     _mpv_property_value(current_player_ipc_server, "playlist-pos")
