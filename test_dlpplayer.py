@@ -2,6 +2,7 @@ import argparse
 import tempfile
 import tkinter
 import unittest
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -23,8 +24,8 @@ from dlpplayer import (
     video_info_from_ytdlp,
 )
 
-
 class BilibiliUrlTests(unittest.TestCase):
+
     def test_accepts_bilibili_video_and_short_links(self):
         self.assertTrue(is_supported_url("https://www.bilibili.com/video/BV123"))
         self.assertTrue(is_supported_url("https://b23.tv/abc"))
@@ -189,6 +190,88 @@ class MpvUrlCommandTests(unittest.TestCase):
         self.assertIn(f"--ytdl-format={VIDEO_FORMAT_DEFAULT}", command)
         self.assertFalse(any("js-runtimes" in item for item in command))
 
+    def test_builds_mpv_command_with_ordered_youtube_items(self):
+        urls = (
+            "https://www.youtube.com/watch?v=first",
+            "https://www.youtube.com/watch?v=second",
+        )
+        command = dlpplayer._build_mpv_playlist_command(
+            "mpv.exe", "yt-dlp.exe", urls, node_runtime="node.exe"
+        )
+
+        self.assertEqual(command[-2:], list(urls))
+        self.assertIn(
+            "--ytdl-raw-options=cookies-from-browser=firefox,js-runtimes=node:node.exe",
+            command,
+        )
+
+    def test_builds_mpv_command_using_title_manifest(self):
+        urls = (
+            "https://www.youtube.com/watch?v=first",
+            "https://www.youtube.com/watch?v=second",
+        )
+        command = dlpplayer._build_mpv_playlist_command(
+            "mpv.exe",
+            "yt-dlp.exe",
+            urls,
+            node_runtime="node.exe",
+            playlist_file="playlist.m3u",
+        )
+
+        self.assertEqual(command[-1], "--playlist=playlist.m3u")
+        self.assertNotIn(urls[0], command)
+        self.assertIn("--ytdl-format=" + VIDEO_FORMAT_DEFAULT, command)
+
+    def test_writes_playlist_titles_and_targets_in_order(self):
+        episodes = (
+            dlpplayer.PlaylistEpisode(
+                "First\ntrack", "https://media.example/1", 75
+            ),
+            dlpplayer.PlaylistEpisode("Second track", "https://media.example/2"),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest = Path(temp_dir) / "playlist.m3u"
+            dlpplayer._write_mpv_playlist(manifest, episodes)
+
+            lines = manifest.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(
+            lines,
+            [
+                "#EXTM3U",
+                "#EXTINF:75,First track",
+                "https://media.example/1",
+                "#EXTINF:-1,Second track",
+                "https://media.example/2",
+            ],
+        )
+
+    def test_canonicalizes_youtube_watch_playlist_url(self):
+        url = (
+            "https://www.youtube.com/watch?v=video1&list=PL123&start_radio=1"
+        )
+
+        self.assertEqual(
+            dlpplayer._youtube_playlist_url(url),
+            "https://www.youtube.com/playlist?list=PL123",
+        )
+        self.assertIsNone(
+            dlpplayer._youtube_playlist_url("https://www.youtube.com/watch?v=video1")
+        )
+
+    def test_strips_mix_parameters_from_selected_youtube_video(self):
+        url = (
+            "https://www.youtube.com/watch?v=video1&list=RDvideo1&start_radio=1"
+        )
+
+        self.assertEqual(
+            dlpplayer._youtube_video_url(url),
+            "https://www.youtube.com/watch?v=video1",
+        )
+        self.assertIsNone(
+            dlpplayer._youtube_video_url("https://www.youtube.com/playlist?list=RDvideo1")
+        )
+
 
 class VideoInfoCommandTests(unittest.TestCase):
     def test_requests_bounded_top_comments(self):
@@ -211,6 +294,241 @@ class VideoInfoCommandTests(unittest.TestCase):
         self.assertGreater(
             command.index("--write-comments"), command.index("--no-write-comments")
         )
+
+
+class PlaylistEpisodeTests(unittest.TestCase):
+    def test_builds_flat_playlist_command(self):
+        url = "https://www.youtube.com/playlist?list=PL123"
+        command = dlpplayer.build_playlist_command(
+            "yt-dlp.exe", url, node_runtime="node.exe"
+        )
+
+        self.assertIn("--flat-playlist", command)
+        self.assertIn("--dump-single-json", command)
+        self.assertIn("--js-runtimes", command)
+        self.assertNotIn("--playlist-items", command)
+        self.assertEqual(command[-1], url)
+
+    def test_fetches_a_bounded_youtube_radio_mix_batch(self):
+        url = "https://www.youtube.com/watch?v=seed&list=RDseed&start_radio=1"
+        result = SimpleNamespace(
+            returncode=0,
+            stdout='{"entries":[{"id":"track1","title":"Track one"},'
+            '{"id":"track2","title":"Track two"}]}',
+            stderr="",
+        )
+        with patch.object(dlpplayer.subprocess, "run", return_value=result) as run:
+            episodes = dlpplayer._fetch_playlist_episodes(
+                "yt-dlp.exe", url, "node.exe", (11, 20)
+            )
+
+        command = run.call_args.args[0]
+        self.assertIn("--yes-playlist", command)
+        self.assertEqual(
+            command[command.index("--playlist-items") + 1], "11-20"
+        )
+        self.assertEqual(
+            episodes,
+            (
+                dlpplayer.PlaylistEpisode(
+                    "Track one", "https://www.youtube.com/watch?v=track1"
+                ),
+                dlpplayer.PlaylistEpisode(
+                    "Track two", "https://www.youtube.com/watch?v=track2"
+                ),
+            ),
+        )
+
+    def test_builds_single_episode_metadata_command(self):
+        url = "https://media.example/play/episode-id/index.m3u8"
+        command = dlpplayer.build_episode_metadata_command("yt-dlp.exe", url)
+
+        self.assertIn("--skip-download", command)
+        self.assertIn("--no-playlist", command)
+        self.assertEqual(command[-1], url)
+
+    def test_fetches_episode_titles_and_playable_urls(self):
+        playlist_url = "https://www.youtube.com/playlist?list=PL123"
+        result = SimpleNamespace(
+            returncode=0,
+            stdout=(
+                '{"entries":[{"id":"first","title":"First episode"},'
+                '{"webpage_url":"https://youtu.be/second",'
+                '"title":"Second episode","duration":62.9},null,{"title":"Unavailable"}]}'
+            ),
+            stderr="",
+        )
+        with patch.object(dlpplayer.subprocess, "run", return_value=result):
+            episodes = dlpplayer.fetch_playlist_episodes("yt-dlp.exe", playlist_url)
+
+        self.assertEqual(
+            episodes,
+            (
+                dlpplayer.PlaylistEpisode(
+                    "First episode", "https://www.youtube.com/watch?v=first"
+                ),
+                dlpplayer.PlaylistEpisode(
+                    "Second episode", "https://youtu.be/second", 62
+                ),
+            ),
+        )
+
+    def test_builds_playable_url_for_bilibili_episode_id(self):
+        result = SimpleNamespace(
+            returncode=0,
+            stdout='{"entries":[{"id":"BV123","title":"Part one"}]}',
+            stderr="",
+        )
+        with patch.object(dlpplayer.subprocess, "run", return_value=result):
+            episodes = dlpplayer.fetch_playlist_episodes(
+                "yt-dlp.exe", "https://www.bilibili.com/medialist/play/123"
+            )
+
+        self.assertEqual(
+            episodes,
+            (
+                dlpplayer.PlaylistEpisode(
+                    "Part one", "https://www.bilibili.com/video/BV123"
+                ),
+            ),
+        )
+
+    def test_returns_none_for_non_playlist_metadata(self):
+        result = SimpleNamespace(
+            returncode=0, stdout='{"id":"video1","title":"Single video"}', stderr=""
+        )
+        with patch.object(dlpplayer.subprocess, "run", return_value=result):
+            self.assertIsNone(
+                dlpplayer.fetch_playlist_episodes(
+                    "yt-dlp.exe", "https://www.youtube.com/watch?v=video1"
+                )
+            )
+
+    def test_hints_recognize_playlist_links(self):
+        self.assertTrue(
+            dlpplayer.is_playlist_url_hint(
+                "https://www.youtube.com/watch?v=video1&list=PL123"
+            )
+        )
+        self.assertFalse(
+            dlpplayer.is_playlist_url_hint("https://www.youtube.com/watch?v=video1")
+        )
+
+
+    def test_reads_m3u8_episode_titles_and_targets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            local_episode = root / "local episode.mp4"
+            local_episode.touch()
+            remote_episode = "https://media.example/second/index.m3u8"
+            playlist = root / "episodes.m3u8"
+            playlist.write_text(
+                "#EXTM3U\n"
+                "#EXTINF:605,第01集\n"
+                "https://media.example/first/index.m3u8\n"
+                "#EXTINF:-1,第02集\n"
+                f"{local_episode.name}\n"
+                "#EXTINF:-1,第03集\n"
+                f"{remote_episode}\n",
+                encoding="utf-8",
+            )
+
+            episodes = dlpplayer.read_local_playlist_episodes(playlist)
+
+        self.assertEqual(
+            episodes,
+            (
+                dlpplayer.PlaylistEpisode(
+                    "第01集", "https://media.example/first/index.m3u8", 605
+                ),
+                dlpplayer.PlaylistEpisode("第02集", str(local_episode.resolve())),
+                dlpplayer.PlaylistEpisode("第03集", remote_episode),
+            ),
+        )
+
+    def test_leaves_unnamed_hls_segments_as_direct_playback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            playlist = Path(temp_dir) / "stream.m3u8"
+            playlist.write_text(
+                "#EXTM3U\n#EXTINF:6,\nsegment-1.ts\n#EXTINF:6,\nsegment-2.ts\n",
+                encoding="utf-8",
+            )
+
+            self.assertIsNone(dlpplayer.read_local_playlist_episodes(playlist))
+
+    def test_reads_ended_hls_manifest_duration_without_ytdlp(self):
+        episode = dlpplayer.PlaylistEpisode(
+            "第01集", "https://media.example/play/episode-id/index.m3u8"
+        )
+        manifest = (
+            b"#EXTM3U\n#EXTINF:8.25,\nsegment-1.ts\n"
+            b"#EXTINF:7.75,\nsegment-2.ts\n#EXT-X-ENDLIST\n"
+        )
+        with patch.object(
+            dlpplayer, "urlopen", return_value=BytesIO(manifest)
+        ) as opener:
+            with patch.object(dlpplayer.subprocess, "run") as run:
+                enriched = dlpplayer.fetch_episode_metadata(None, episode)
+
+        self.assertEqual(
+            enriched,
+            dlpplayer.PlaylistEpisode(episode.title, episode.target, 16),
+        )
+        opener.assert_called_once()
+        run.assert_not_called()
+
+    def test_ignores_live_hls_manifest_duration(self):
+        manifest = BytesIO(b"#EXTM3U\n#EXTINF:10,\nsegment.ts\n")
+        with patch.object(dlpplayer, "urlopen", return_value=manifest):
+            duration = dlpplayer._hls_duration_seconds(
+                "https://media.example/live/stream.m3u8"
+            )
+
+        self.assertIsNone(duration)
+
+    def test_enriches_episode_title_and_duration(self):
+        episode = dlpplayer.PlaylistEpisode(
+            "第01集", "https://media.example/watch/episode-id"
+        )
+        result = SimpleNamespace(
+            returncode=0,
+            stdout='{"title":"A real episode title","duration":637}',
+            stderr="",
+        )
+        with patch.object(dlpplayer.subprocess, "run", return_value=result):
+            enriched = dlpplayer.fetch_episode_metadata("yt-dlp.exe", episode)
+
+        self.assertEqual(
+            enriched,
+            dlpplayer.PlaylistEpisode(
+                "A real episode title", episode.target, 637
+            ),
+        )
+        self.assertEqual(
+            dlpplayer._playlist_episode_label(1, enriched),
+            "1. A real episode title  10:37",
+        )
+
+    def test_keeps_m3u_title_when_extractor_only_returns_generic_title(self):
+        episode = dlpplayer.PlaylistEpisode(
+            "第01集", "https://media.example/index/episode-id"
+        )
+        for generic_title in ("Remote clip", "index"):
+            result = SimpleNamespace(
+                returncode=0,
+                stdout=f'{{"title":"{generic_title}","duration":637}}',
+                stderr="",
+            )
+            with self.subTest(title=generic_title):
+                with patch.object(
+                    dlpplayer.subprocess, "run", return_value=result
+                ):
+                    enriched = dlpplayer.fetch_episode_metadata(
+                        "yt-dlp.exe", episode
+                    )
+
+                self.assertEqual(enriched.title, "第01集")
+                self.assertEqual(enriched.duration_seconds, 637)
 
 
 class BilibiliCommentFetchTests(unittest.TestCase):

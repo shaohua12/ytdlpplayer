@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import queue
 import re
@@ -15,7 +16,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 
@@ -24,10 +25,14 @@ MPV_DEFAULT = Path(r"D:\bin\mpv\mpv.exe")
 FFMPEG_DEFAULT = Path(r"D:\bin\ffmpeg\bin")
 NODE_DEFAULT = Path(r"D:\bin\nodejs\node.exe")
 VIDEO_FORMAT_DEFAULT = "bv*[height<=1080]+ba/b[height<=1080]"
+RADIO_MIX_BATCH_SIZE = 10
+
+
 YOUTUBE_COMMENT_FETCH_LIMIT = 100
 VIDEO_COMMENT_DISPLAY_LIMIT = 100
 BILIBILI_COMMENT_PAGE_SIZE = 20
 BILIBILI_COMMENT_TIMEOUT = 5
+HLS_METADATA_TIMEOUT = 10
 IDLE_WINDOW_MIN_HEIGHT = 150
 OUTPUT_DEFAULT = Path(__file__).resolve().parent
 
@@ -80,6 +85,59 @@ def is_youtube_url(url: str) -> bool:
         or host == "youtube-nocookie.com"
         or host.endswith(".youtube-nocookie.com")
     )
+
+
+def is_playlist_url_hint(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return False
+    query_keys = {key.lower() for key in parse_qs(parsed.query)}
+    if query_keys & {"list", "playlist", "playlist_id", "playlistid"}:
+        return True
+    path = parsed.path.lower()
+    return any(marker in path for marker in ("/playlist", "/medialist/", "/series/"))
+
+def _youtube_playlist_url(url: str) -> str | None:
+    if not is_youtube_url(url):
+        return None
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    playlist_ids = parse_qs(parsed.query).get("list")
+    if not playlist_ids or not playlist_ids[0]:
+        return None
+    return urlunsplit(
+        (
+            "https",
+            "www.youtube.com",
+            "/playlist",
+            urlencode({"list": playlist_ids[0]}),
+            "",
+        )
+    )
+
+def _youtube_video_url(url: str) -> str | None:
+    if not is_youtube_url(url):
+        return None
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    video_ids = parse_qs(parsed.query).get("v")
+    if not video_ids or not video_ids[0]:
+        return None
+    return urlunsplit(
+        (
+            "https",
+            "www.youtube.com",
+            "/watch",
+            urlencode({"v": video_ids[0]}),
+            "",
+        )
+    )
+
 
 
 def extract_http_url(text: str) -> str | None:
@@ -168,14 +226,17 @@ def build_download_command(
     return command
 
 
-def build_mpv_url_command(
+def _build_mpv_playlist_command(
     mpv: str,
     yt_dlp: str,
-    url: str,
+    urls: tuple[str, ...],
     node_runtime: str | None = None,
     firefox_profile: str | None = None,
     use_cookies: bool = True,
+    playlist_file: str | None = None,
 ) -> list[str]:
+    if not urls:
+        raise ValueError("At least one playlist item is required.")
     command = [
         mpv,
         f"--script-opts=ytdl_hook-ytdl_path={yt_dlp}",
@@ -187,13 +248,29 @@ def build_mpv_url_command(
         if firefox_profile:
             browser += f":{firefox_profile}"
         raw_options.append(f"cookies-from-browser={browser}")
-    if is_youtube_url(url):
+    if any(is_youtube_url(url) for url in urls):
         runtime = f"node:{node_runtime}" if node_runtime else "node"
         raw_options.append(f"js-runtimes={runtime}")
     if raw_options:
         command.append(f"--ytdl-raw-options={','.join(raw_options)}")
-    command.append(url)
+    if playlist_file is None:
+        command.extend(urls)
+    else:
+        command.append(f"--playlist={playlist_file}")
     return command
+
+
+def build_mpv_url_command(
+    mpv: str,
+    yt_dlp: str,
+    url: str,
+    node_runtime: str | None = None,
+    firefox_profile: str | None = None,
+    use_cookies: bool = True,
+) -> list[str]:
+    return _build_mpv_playlist_command(
+        mpv, yt_dlp, (url,), node_runtime, firefox_profile, use_cookies
+    )
 
 
 def build_video_info_command(
@@ -227,6 +304,60 @@ def build_video_info_command(
     return command
 
 
+def _build_playlist_command(
+    yt_dlp: str,
+    url: str,
+    node_runtime: str | None = None,
+    playlist_items: tuple[int, int] | None = None,
+) -> list[str]:
+    command = [
+        yt_dlp,
+        "--no-warnings",
+        "--dump-single-json",
+        "--skip-download",
+        "--flat-playlist",
+        "--no-write-comments",
+        "--cookies-from-browser",
+        "firefox",
+    ]
+    if playlist_items is not None:
+        start, end = playlist_items
+        command.extend(
+            ["--yes-playlist", "--playlist-items", f"{start}-{end}"]
+        )
+    if is_youtube_url(url):
+        runtime = f"node:{node_runtime}" if node_runtime else "node"
+        command.extend(["--js-runtimes", runtime])
+    command.append(url)
+    return command
+
+
+def build_playlist_command(
+    yt_dlp: str, url: str, node_runtime: str | None = None
+) -> list[str]:
+    return _build_playlist_command(yt_dlp, url, node_runtime)
+
+
+def build_episode_metadata_command(
+    yt_dlp: str, url: str, node_runtime: str | None = None
+) -> list[str]:
+    command = [
+        yt_dlp,
+        "--no-warnings",
+        "--dump-single-json",
+        "--skip-download",
+        "--no-write-comments",
+        "--no-playlist",
+    ]
+    if is_supported_url(url):
+        command.extend(["--cookies-from-browser", "firefox"])
+    if is_youtube_url(url):
+        runtime = f"node:{node_runtime}" if node_runtime else "node"
+        command.extend(["--js-runtimes", runtime])
+    command.append(url)
+    return command
+
+
 @dataclass(frozen=True)
 class VideoComment:
     text: str
@@ -239,6 +370,29 @@ class VideoInfo:
     title: str
     details: tuple[str, ...]
     comments: tuple[VideoComment, ...] = ()
+
+
+@dataclass(frozen=True)
+class PlaylistEpisode:
+    title: str
+    target: str
+    duration_seconds: int | None = None
+
+
+def _write_mpv_playlist(
+    path: Path, episodes: tuple[PlaylistEpisode, ...]
+) -> None:
+    lines = ["#EXTM3U"]
+    for episode in episodes:
+        duration = episode.duration_seconds
+        title = " ".join(episode.title.split())
+        lines.extend(
+            (
+                f"#EXTINF:{duration if duration is not None else -1},{title}",
+                episode.target,
+            )
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def format_video_info(
@@ -262,23 +416,74 @@ def format_video_info(
         if video_width > 0 and video_height > 0:
             summary.append(f"{video_width} × {video_height}")
 
-    try:
-        seconds = int(float(duration))
-        if seconds < 0:
-            raise ValueError
-    except (TypeError, ValueError, OverflowError):
-        pass
-    else:
-        hours, remainder = divmod(seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        summary.append(
-            f"{hours}:{minutes:02}:{seconds:02}"
-            if hours
-            else f"{minutes}:{seconds:02}"
-        )
+    duration_text = _format_duration(duration)
+    if duration_text is not None:
+        summary.append(duration_text)
 
     details = ([" · ".join(summary)] if summary else []) + list(additional_details)
     return VideoInfo(display_title, tuple(details), comments)
+
+
+def _duration_seconds(value: object) -> int | None:
+    try:
+        seconds = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return seconds if seconds >= 0 else None
+
+
+def _format_duration(value: object) -> str | None:
+    seconds = _duration_seconds(value)
+    if seconds is None:
+        return None
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return (
+        f"{hours}:{minutes:02}:{seconds:02}"
+        if hours
+        else f"{minutes}:{seconds:02}"
+    )
+
+
+def _hls_duration_seconds(url: str) -> int | None:
+    try:
+        path = urlsplit(url).path.lower()
+    except ValueError:
+        return None
+    if not path.endswith((".m3u", ".m3u8")):
+        return None
+    try:
+        request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(request, timeout=HLS_METADATA_TIMEOUT) as response:
+            manifest = response.read().decode("utf-8-sig", errors="replace")
+    except (OSError, ValueError):
+        return None
+    if "#EXT-X-ENDLIST" not in manifest.upper():
+        return None
+
+    durations = []
+    for line in manifest.splitlines():
+        line = line.strip()
+        if not line.upper().startswith("#EXTINF:"):
+            continue
+        raw_duration = line[len("#EXTINF:") :].partition(",")[0].strip()
+        try:
+            duration = float(raw_duration)
+        except ValueError:
+            return None
+        if not math.isfinite(duration) or duration < 0:
+            return None
+        durations.append(duration)
+    total_duration = sum(durations)
+    if not durations or not math.isfinite(total_duration):
+        return None
+    return int(round(total_duration))
+
+
+def _playlist_episode_label(index: int, episode: PlaylistEpisode) -> str:
+    label = f"{index}. {episode.title}"
+    duration = _format_duration(episode.duration_seconds)
+    return f"{label}  {duration}" if duration else label
 
 
 def _metadata_text(value: object) -> str | None:
@@ -756,6 +961,166 @@ def fetch_url_video_info(
     return video_info_from_ytdlp(metadata)
 
 
+def _fetch_playlist_episodes(
+    yt_dlp: str,
+    url: str,
+    node_runtime: str | None = None,
+    playlist_items: tuple[int, int] | None = None,
+) -> tuple[PlaylistEpisode, ...] | None:
+    result = subprocess.run(
+        _build_playlist_command(yt_dlp, url, node_runtime, playlist_items),
+        capture_output=True,
+        check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=45,
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "yt-dlp could not read the playlist.")
+    metadata = json.loads(result.stdout)
+    if not isinstance(metadata, dict):
+        raise ValueError("yt-dlp returned invalid playlist information.")
+    entries = metadata.get("entries")
+    if not isinstance(entries, list):
+        return None
+
+    episodes = []
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            continue
+        episode_url = None
+        for key in ("webpage_url", "original_url", "url"):
+            candidate = entry.get(key)
+            if isinstance(candidate, str) and is_http_url(candidate):
+                episode_url = candidate
+                break
+        identifier = entry.get("id")
+        if episode_url is None and isinstance(identifier, str):
+            if is_youtube_url(url):
+                episode_url = (
+                    f"https://www.youtube.com/watch?{urlencode({'v': identifier})}"
+                )
+            elif is_supported_url(url):
+                video_id = identifier
+                if video_id.isdecimal():
+                    video_id = f"av{video_id}"
+                if video_id.lower().startswith("bv") and video_id[2:].isalnum():
+                    episode_url = f"https://www.bilibili.com/video/{video_id}"
+                elif video_id.lower().startswith("av") and video_id[2:].isdecimal():
+                    episode_url = f"https://www.bilibili.com/video/{video_id}"
+        if episode_url is None:
+            continue
+        title = entry.get("title")
+        if not isinstance(title, str) or not title.strip():
+            title = str(identifier) if identifier else f"Episode {index}"
+        episodes.append(
+            PlaylistEpisode(
+                title.strip(), episode_url, _duration_seconds(entry.get("duration"))
+            )
+        )
+    return tuple(episodes)
+
+
+def fetch_playlist_episodes(
+    yt_dlp: str, url: str, node_runtime: str | None = None
+) -> tuple[PlaylistEpisode, ...] | None:
+    return _fetch_playlist_episodes(yt_dlp, url, node_runtime)
+
+
+def read_local_playlist_episodes(
+    playlist_file: Path,
+) -> tuple[PlaylistEpisode, ...] | None:
+    if playlist_file.suffix.lower() not in {".m3u", ".m3u8"}:
+        return None
+    lines = playlist_file.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+    first_line = next((line.strip() for line in lines if line.strip()), "")
+    if first_line.upper() != "#EXTM3U":
+        return None
+
+    episodes = []
+    pending_title: str | None = None
+    pending_duration: int | None = None
+    for line in lines:
+        line = line.strip()
+        if line.upper().startswith("#EXTINF:"):
+            raw_duration, separator, title = line[len("#EXTINF:") :].partition(",")
+            pending_title = title.strip() if separator else None
+            pending_title = pending_title or None
+            pending_duration = (
+                _duration_seconds(raw_duration) if separator else None
+            )
+            continue
+        if not line or line.startswith("#") or pending_title is None:
+            continue
+        if is_http_url(line):
+            target = line
+        elif "://" in line:
+            pending_title = None
+            pending_duration = None
+            continue
+        else:
+            target_path = Path(line).expanduser()
+            if not target_path.is_absolute():
+                target_path = playlist_file.resolve().parent / target_path
+            target = str(target_path.resolve())
+        episodes.append(PlaylistEpisode(pending_title, target, pending_duration))
+        pending_title = None
+        pending_duration = None
+    return tuple(episodes) if episodes else None
+
+
+
+def fetch_episode_metadata(
+    yt_dlp: str | None, episode: PlaylistEpisode, node_runtime: str | None = None
+) -> PlaylistEpisode:
+    if not is_http_url(episode.target):
+        return episode
+    hls_duration = _hls_duration_seconds(episode.target)
+    if hls_duration is not None:
+        return PlaylistEpisode(episode.title, episode.target, hls_duration)
+    if yt_dlp is None:
+        return episode
+    result = subprocess.run(
+        build_episode_metadata_command(yt_dlp, episode.target, node_runtime),
+        capture_output=True,
+        check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+    )
+    if result.returncode:
+        return episode
+    metadata = json.loads(result.stdout)
+    if not isinstance(metadata, dict):
+        return episode
+    entries = metadata.get("entries")
+    if isinstance(entries, list):
+        metadata = next((entry for entry in entries if isinstance(entry, dict)), {})
+    if not isinstance(metadata, dict):
+        return episode
+
+    title = episode.title
+    metadata_title = metadata.get("title")
+    if isinstance(metadata_title, str) and metadata_title.strip():
+        path = Path(urlsplit(episode.target).path)
+        generic_titles = {
+            path.name.casefold(),
+            path.stem.casefold(),
+            path.parent.name.casefold(),
+            "remote clip",
+        }
+        if metadata_title.strip().casefold() not in generic_titles:
+            title = metadata_title.strip()
+    duration = _duration_seconds(metadata.get("duration"))
+    if duration is None:
+        duration = episode.duration_seconds
+    return PlaylistEpisode(title, episode.target, duration)
+
+
 def resolve_ffprobe_tool() -> str:
     try:
         ffmpeg = resolve_tool(
@@ -894,6 +1259,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         return 1
 
     root = TkinterDnD.Tk()
+
+    playlist_tempdir = tempfile.TemporaryDirectory(prefix="dlpplayer-mpv-")
+    playlist_manifest_path = Path(playlist_tempdir.name) / "playlist.m3u"
     root.title("DLPPlayer — Drop a video, playlist, or link")
     window_width = 600
     screen_width = root.winfo_screenwidth()
@@ -921,8 +1289,21 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     url_row.pack(fill="x")
     url_entry = ttk.Entry(url_row)
     url_entry.pack(side="left", fill="x", expand=True)
+    stop_button = ttk.Button(url_row, text="■ Stop", state="disabled")
+    stop_button.pack(side="right", padx=(8, 0))
     play_button = ttk.Button(url_row, text="▶ Play in mpv")
-    play_button.pack(side="right", padx=(8, 0))
+    play_button.pack(side="right")
+
+    episode_row = ttk.Frame(frame)
+    ttk.Label(episode_row, text="Episode:").pack(side="left", padx=(0, 8))
+    episode_selection = tk.StringVar(value="")
+    episode_combo = ttk.Combobox(
+        episode_row,
+        textvariable=episode_selection,
+        state="readonly",
+        height=12,
+    )
+    episode_combo.pack(side="left", fill="x", expand=True)
 
     info_frame = ttk.LabelFrame(frame, text="Video information", padding=8)
     video_title = tk.StringVar(value="")
@@ -950,6 +1331,28 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     comments_text.pack(fill="both", expand=True)
     metadata_results: queue.Queue[tuple[int, VideoInfo | None]] = queue.Queue()
     metadata_request = 0
+    playlist_results: queue.Queue[
+        tuple[int, str, tuple[PlaylistEpisode, ...] | None, str | None]
+    ] = queue.Queue()
+    playlist_request = 0
+    radio_mix_results: queue.Queue[
+        tuple[int, int, tuple[PlaylistEpisode, ...] | None, str | None]
+    ] = queue.Queue()
+    radio_mix_request = 0
+    radio_mix_url: str | None = None
+    radio_mix_next_start = 1
+    radio_mix_loading = False
+    radio_mix_active = False
+    radio_mix_yt_dlp: str | None = None
+    radio_mix_node_runtime: str | None = None
+    episode_metadata_results: queue.Queue[
+        tuple[int, int, PlaylistEpisode]
+    ] = queue.Queue()
+    pending_playlist_url: str | None = None
+    playlist_playing_url: str | None = None
+    loaded_playlist_url: str | None = None
+    loaded_playlist_path: Path | None = None
+    playlist_episodes: tuple[PlaylistEpisode, ...] = ()
 
     def display_comments(comments: tuple[VideoComment, ...]) -> None:
         comments_text.configure(state="normal")
@@ -971,6 +1374,96 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         root.update_idletasks()
         height = max(root.winfo_reqheight(), IDLE_WINDOW_MIN_HEIGHT)
         root.geometry(f"{root.winfo_width()}x{height}")
+
+    def clear_playlist_selection() -> None:
+        nonlocal playlist_request, pending_playlist_url
+        nonlocal loaded_playlist_url, loaded_playlist_path, playlist_episodes
+        nonlocal playlist_playing_url, radio_mix_request, radio_mix_url
+        nonlocal radio_mix_loading, radio_mix_active
+        playlist_request += 1
+        radio_mix_request += 1
+        radio_mix_url = None
+        radio_mix_loading = False
+        radio_mix_active = False
+        pending_playlist_url = None
+        playlist_playing_url = None
+        loaded_playlist_url = None
+        loaded_playlist_path = None
+        playlist_episodes = ()
+        episode_combo.configure(values=())
+        episode_combo.set("")
+        episode_row.pack_forget()
+        play_button.configure(state="normal")
+        stop_button.configure(
+            state="normal" if current_player is not None else "disabled"
+        )
+        fit_window_height()
+
+    def show_playlist_episodes(episodes: tuple[PlaylistEpisode, ...]) -> None:
+        nonlocal playlist_episodes
+        playlist_episodes = episodes
+        if not episodes:
+            status.set("No playable episodes were found in this playlist.")
+            return
+        episode_combo.configure(
+            values=tuple(
+                _playlist_episode_label(index, episode)
+                for index, episode in enumerate(episodes, start=1)
+            )
+        )
+        episode_combo.current(0)
+        episode_row.pack(after=url_row, fill="x", pady=(8, 0))
+        fit_window_height()
+        status.set(f"Found {len(episodes)} episodes. Playing from episode 1.")
+
+    def request_episode_metadata(
+        episodes: tuple[PlaylistEpisode, ...], request_id: int
+    ) -> None:
+        targets = tuple(
+            (index, episode)
+            for index, episode in enumerate(episodes)
+            if is_http_url(episode.target)
+        )
+        if not targets:
+            return
+        try:
+            yt_dlp = resolve_tool(None, "DLPPLAYER_YTDLP", YTDLP_DEFAULT, "yt-dlp")
+        except FileNotFoundError:
+            yt_dlp = None
+        node_runtime = None
+        if yt_dlp is not None and any(
+            is_youtube_url(episode.target) for _, episode in targets
+        ):
+            try:
+                node_runtime = resolve_tool(
+                    None, "DLPPLAYER_NODE", NODE_DEFAULT, "node"
+                )
+            except FileNotFoundError:
+                pass
+
+        pending = queue.Queue()
+        for item in targets:
+            pending.put(item)
+
+        def enrich_episodes() -> None:
+            while True:
+                try:
+                    index, episode = pending.get_nowait()
+                except queue.Empty:
+                    return
+                try:
+                    updated_episode = fetch_episode_metadata(
+                        yt_dlp, episode, node_runtime
+                    )
+                except Exception:
+                    continue
+                if updated_episode != episode:
+                    episode_metadata_results.put(
+                        (request_id, index, updated_episode)
+                    )
+
+        for _ in range(min(4, len(targets))):
+            threading.Thread(target=enrich_episodes, daemon=True).start()
 
     def clear_video_info() -> None:
         nonlocal metadata_request
@@ -1014,6 +1507,33 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     status = tk.StringVar(value="Ready.")
     current_player: subprocess.Popen | None = None
 
+    def stop_current_player() -> None:
+        nonlocal current_player
+        player = current_player
+        current_player = None
+        if player is not None and player.poll() is None:
+            try:
+                player.terminate()
+            except OSError:
+                pass
+        stop_button.configure(state="disabled")
+
+    def stop_playback() -> None:
+        nonlocal radio_mix_request, radio_mix_url, radio_mix_loading, radio_mix_active
+        had_playback = current_player is not None or radio_mix_active
+        radio_mix_request += 1
+        radio_mix_url = None
+        radio_mix_loading = False
+        radio_mix_active = False
+        stop_current_player()
+        play_button.configure(state="normal")
+        stop_button.configure(state="disabled")
+        if had_playback:
+            set_playback_lamp(True, False)
+            clear_video_info()
+            status.set("Playback stopped.")
+
+
     def set_playback_lamp(available: bool, playing: bool = False) -> None:
         if not available:
             lamp_canvas.pack_forget()
@@ -1028,29 +1548,42 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
 
 
     def check_player(player: subprocess.Popen) -> None:
+        nonlocal current_player, radio_mix_active
         if player is not current_player:
             return
         if player.poll() is None:
             set_playback_lamp(True, True)
-            status.set("mpv is running; check its window for stream status.")
-            root.after(2000, check_player, player)
-        else:
-            set_playback_lamp(True, False)
-            clear_video_info()
-            if player.returncode == 0:
-                status.set("mpv finished playback.")
+            if radio_mix_active:
+                status.set("YouTube radio mix is playing. Use Stop to end it.")
             else:
-                status.set(
-                    f"mpv exited with code {player.returncode}; check its window for details."
-                )
+                status.set("mpv is running; check its window for stream status.")
+            root.after(2000, check_player, player)
+            return
 
-    def play_url(url: str) -> None:
-        nonlocal current_player
         current_player = None
+        set_playback_lamp(True, False)
+        clear_video_info()
+        if radio_mix_active and player.returncode == 0:
+            status.set("Mix batch finished; loading the next batch...")
+            request_radio_mix_batch(radio_mix_next_start)
+            return
+        if radio_mix_active:
+            radio_mix_active = False
+        stop_button.configure(state="disabled")
+        play_button.configure(state="normal")
+        if player.returncode == 0:
+            status.set("mpv finished playback.")
+        else:
+            status.set(
+                f"mpv exited with code {player.returncode}; check its window for details."
+            )
+
+    def start_playback(url: str, display_url: str) -> None:
+        nonlocal current_player, playlist_playing_url
+        stop_current_player()
+        playlist_playing_url = None
         set_playback_lamp(False)
         clear_video_info()
-        status.set("Validating URL...")
-        root.update_idletasks()
         if not is_http_url(url):
             status.set("Please use a valid HTTP(S) URL.")
             return
@@ -1076,16 +1609,354 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             messagebox.showerror("Could not play URL", str(error), parent=root)
             return
         current_player = player
+        stop_button.configure(state="normal")
         set_playback_lamp(True, player.poll() is None)
-        request_video_info(lambda: fetch_url_video_info(yt_dlp, url, node_runtime))
+        if _youtube_playlist_url(url) is None:
+            request_video_info(
+                lambda: fetch_url_video_info(yt_dlp, url, node_runtime)
+            )
         url_entry.delete(0, tk.END)
-        url_entry.insert(0, url)
+        url_entry.insert(0, display_url)
         status.set("mpv started successfully; yt-dlp is resolving the stream.")
         root.after(2000, check_player, player)
 
+    def start_playlist_playback(display_url: str, start_index: int = 0) -> None:
+        nonlocal current_player, playlist_playing_url
+        if not 0 <= start_index < len(playlist_episodes):
+            status.set("Select an episode, then press Play in mpv.")
+            return
+        episodes = playlist_episodes[start_index:]
+        targets = tuple(episode.target for episode in episodes)
+        first_episode = episodes[0]
+        missing_path = next(
+            (
+                Path(target)
+                for target in targets
+                if not is_http_url(target) and not Path(target).is_file()
+            ),
+            None,
+        )
+        if missing_path is not None:
+            status.set(f"Local media file was not found: {missing_path}")
+            return
+
+        stop_current_player()
+        playlist_playing_url = None
+        set_playback_lamp(False)
+        clear_video_info()
+        status.set("Starting playlist in mpv...")
+        root.update_idletasks()
+        yt_dlp = None
+        node_runtime = None
+        try:
+            mpv = resolve_tool(None, "DLPPLAYER_MPV", MPV_DEFAULT, "mpv")
+            _write_mpv_playlist(playlist_manifest_path, episodes)
+            if any(is_http_url(target) for target in targets):
+                yt_dlp = resolve_tool(
+                    None, "DLPPLAYER_YTDLP", YTDLP_DEFAULT, "yt-dlp"
+                )
+                if any(is_youtube_url(target) for target in targets):
+                    node_runtime = resolve_tool(
+                        None, "DLPPLAYER_NODE", NODE_DEFAULT, "node"
+                    )
+                command = _build_mpv_playlist_command(
+                    mpv,
+                    yt_dlp,
+                    targets,
+                    node_runtime,
+                    playlist_file=str(playlist_manifest_path),
+                )
+            else:
+                command = [mpv, f"--playlist={playlist_manifest_path}"]
+            player = subprocess.Popen(command)
+        except (FileNotFoundError, OSError) as error:
+            status.set(f"Could not start playlist: {error}")
+            messagebox.showerror("Could not play playlist", str(error), parent=root)
+            return
+
+        current_player = player
+        stop_button.configure(state="normal")
+        playlist_playing_url = (
+            display_url if is_http_url(display_url) else None
+        )
+        episode_combo.current(start_index)
+        set_playback_lamp(True, player.poll() is None)
+        url_entry.delete(0, tk.END)
+        url_entry.insert(0, display_url)
+        if is_http_url(first_episode.target) and yt_dlp is not None:
+            request_video_info(
+                lambda: fetch_url_video_info(
+                    yt_dlp, first_episode.target, node_runtime
+                )
+            )
+        elif not is_http_url(first_episode.target):
+            first_file = Path(first_episode.target).resolve()
+            request_video_info(
+                lambda: fetch_local_video_info(resolve_ffprobe_tool(), first_file)
+            )
+        status.set(
+            f"mpv started; playing {first_episode.title}; "
+            f"{len(targets)} episodes queued in order."
+        )
+        root.after(2000, check_player, player)
+
+    def play_selected_episode(display_url: str) -> None:
+        episode_index = episode_combo.current()
+        if not 0 <= episode_index < len(playlist_episodes):
+            status.set("Select an episode, then press Play in mpv.")
+            return
+        start_playlist_playback(display_url, episode_index)
+
+    def request_radio_mix_batch(start: int) -> None:
+        nonlocal radio_mix_loading
+        if not radio_mix_active or radio_mix_url is None or radio_mix_loading:
+            return
+        radio_mix_loading = True
+        request_id = radio_mix_request
+        url = radio_mix_url
+        yt_dlp = radio_mix_yt_dlp
+        node_runtime = radio_mix_node_runtime
+
+        def inspect_batch() -> None:
+            try:
+                if yt_dlp is None:
+                    raise FileNotFoundError("yt-dlp was not found.")
+                episodes = _fetch_playlist_episodes(
+                    yt_dlp,
+                    url,
+                    node_runtime,
+                    (start, start + RADIO_MIX_BATCH_SIZE - 1),
+                )
+                error_message = None
+            except Exception as error:
+                episodes = None
+                error_message = str(error) or "yt-dlp could not read the mix."
+            radio_mix_results.put((request_id, start, episodes, error_message))
+
+        threading.Thread(target=inspect_batch, daemon=True).start()
+
+    def start_radio_mix(url: str, yt_dlp: str, node_runtime: str | None) -> None:
+        nonlocal radio_mix_request, radio_mix_url, radio_mix_next_start
+        nonlocal radio_mix_loading, radio_mix_active, radio_mix_yt_dlp
+        nonlocal radio_mix_node_runtime, pending_playlist_url
+        radio_mix_request += 1
+        radio_mix_url = url
+        radio_mix_next_start = 1
+        radio_mix_loading = False
+        radio_mix_active = True
+        radio_mix_yt_dlp = yt_dlp
+        radio_mix_node_runtime = node_runtime
+        pending_playlist_url = None
+        play_button.configure(state="disabled")
+        stop_button.configure(state="normal")
+        status.set("Loading the first YouTube radio mix batch...")
+        request_radio_mix_batch(1)
+
+
+    def play_url(url: str) -> None:
+        nonlocal pending_playlist_url, playlist_playing_url
+        if not is_http_url(url):
+            clear_playlist_selection()
+            status.set("Please use a valid HTTP(S) URL.")
+            return
+        youtube_playlist = _youtube_playlist_url(url)
+        playlist_id = (
+            parse_qs(urlsplit(youtube_playlist).query).get("list", [""])[0]
+            if youtube_playlist is not None
+            else ""
+        )
+        is_radio_mix = playlist_id.startswith("RD")
+        if is_radio_mix and radio_mix_active and radio_mix_url == url:
+            return
+        if not is_radio_mix and loaded_playlist_url == url and playlist_episodes:
+            play_selected_episode(url)
+            return
+        if pending_playlist_url == url:
+            return
+
+        clear_playlist_selection()
+        request_id = playlist_request
+        pending_playlist_url = url
+        stop_current_player()
+        set_playback_lamp(False)
+        clear_video_info()
+        url_entry.delete(0, tk.END)
+        url_entry.insert(0, url)
+        status.set("Checking URL for playlist episodes...")
+        root.update_idletasks()
+        if is_radio_mix:
+            if _youtube_video_url(url) is None:
+                pending_playlist_url = None
+                status.set("This YouTube mix URL has no selected video to play.")
+                return
+            try:
+                yt_dlp = resolve_tool(
+                    None, "DLPPLAYER_YTDLP", YTDLP_DEFAULT, "yt-dlp"
+                )
+                node_runtime = resolve_tool(
+                    None, "DLPPLAYER_NODE", NODE_DEFAULT, "node"
+                )
+            except FileNotFoundError as error:
+                pending_playlist_url = None
+                status.set(f"Could not inspect URL: {error}")
+                messagebox.showerror("Could not inspect URL", str(error), parent=root)
+                return
+            start_radio_mix(url, yt_dlp, node_runtime)
+            return
+        if youtube_playlist is not None:
+            start_playback(youtube_playlist, url)
+            if current_player is None:
+                pending_playlist_url = None
+                play_button.configure(state="normal")
+                return
+            playlist_playing_url = url
+            status.set("mpv is playing the YouTube playlist while loading its episodes.")
+        elif is_youtube_url(url):
+            pending_playlist_url = None
+            start_playback(url, url)
+            return
+        try:
+            yt_dlp = resolve_tool(None, "DLPPLAYER_YTDLP", YTDLP_DEFAULT, "yt-dlp")
+            node_runtime = None
+            if is_youtube_url(url):
+                node_runtime = resolve_tool(
+                    None, "DLPPLAYER_NODE", NODE_DEFAULT, "node"
+                )
+        except FileNotFoundError as error:
+            pending_playlist_url = None
+            if playlist_playing_url == url:
+                status.set("mpv started; episode details are unavailable.")
+            else:
+                status.set(f"Could not inspect URL: {error}")
+                messagebox.showerror("Could not inspect URL", str(error), parent=root)
+            return
+        if playlist_playing_url != url:
+            play_button.configure(state="disabled")
+
+        def inspect_playlist() -> None:
+            try:
+                episodes = fetch_playlist_episodes(
+                    yt_dlp, youtube_playlist or url, node_runtime
+                )
+                error_message = None
+            except Exception as error:
+                episodes = None
+                error_message = str(error) or "yt-dlp could not inspect the URL."
+            playlist_results.put((request_id, url, episodes, error_message))
+
+        threading.Thread(target=inspect_playlist, daemon=True).start()
+
+
+
+    def poll_playlist_results() -> None:
+        nonlocal pending_playlist_url, loaded_playlist_url, playlist_playing_url
+        nonlocal loaded_playlist_path, playlist_episodes
+        while True:
+            try:
+                request_id, url, episodes, error_message = playlist_results.get_nowait()
+            except queue.Empty:
+                break
+            if request_id != playlist_request:
+                continue
+            pending_playlist_url = None
+            play_button.configure(state="normal")
+            if extract_http_url(url_entry.get()) != url:
+                clear_playlist_selection()
+                status.set("URL changed. Press Play in mpv to inspect it.")
+                continue
+            if error_message is not None:
+                if playlist_playing_url == url:
+                    status.set("Episode list unavailable; mpv playback was started.")
+                else:
+                    youtube_playlist = _youtube_playlist_url(url)
+                    start_playback(youtube_playlist or url, url)
+                    if youtube_playlist is not None and current_player is not None:
+                        playlist_playing_url = url
+                continue
+            if episodes is None or not episodes:
+                if playlist_playing_url != url:
+                    youtube_playlist = _youtube_playlist_url(url)
+                    start_playback(youtube_playlist or url, url)
+                    if youtube_playlist is not None and current_player is not None:
+                        playlist_playing_url = url
+                elif not episodes:
+                    status.set("No episode list was returned; mpv playback continues.")
+                continue
+            loaded_playlist_url = url
+            loaded_playlist_path = None
+            show_playlist_episodes(episodes)
+            if playlist_playing_url != url:
+                start_playlist_playback(url)
+
+
+        while True:
+            try:
+                request_id, index, episode = episode_metadata_results.get_nowait()
+            except queue.Empty:
+                break
+            if request_id != playlist_request or loaded_playlist_path is None:
+                continue
+            if index >= len(playlist_episodes):
+                continue
+            if playlist_episodes[index].target != episode.target:
+                continue
+            selected_index = episode_combo.current()
+            updated_episodes = list(playlist_episodes)
+            updated_episodes[index] = episode
+            playlist_episodes = tuple(updated_episodes)
+            episode_combo.configure(
+                values=tuple(
+                    _playlist_episode_label(item_index, item)
+                    for item_index, item in enumerate(playlist_episodes, start=1)
+                )
+            )
+            if selected_index >= 0:
+                episode_combo.current(selected_index)
+        root.after(100, poll_playlist_results)
+
+    def poll_radio_mix_results() -> None:
+        nonlocal radio_mix_loading, radio_mix_active, radio_mix_next_start
+        nonlocal loaded_playlist_url, loaded_playlist_path
+        while True:
+            try:
+                request_id, start, episodes, error_message = radio_mix_results.get_nowait()
+            except queue.Empty:
+                break
+            if request_id != radio_mix_request or not radio_mix_active:
+                continue
+            radio_mix_loading = False
+            end = start + RADIO_MIX_BATCH_SIZE - 1
+            if error_message is not None:
+                radio_mix_active = False
+                stop_button.configure(state="disabled")
+                play_button.configure(state="normal")
+                status.set(
+                    f"Could not load YouTube mix items {start}-{end}: "
+                    f"{error_message}"
+                )
+                continue
+            if not episodes:
+                radio_mix_active = False
+                stop_button.configure(state="disabled")
+                play_button.configure(state="normal")
+                status.set("No more items are available in this YouTube radio mix.")
+                continue
+            radio_mix_next_start = start + RADIO_MIX_BATCH_SIZE
+            loaded_playlist_url = radio_mix_url
+            loaded_playlist_path = None
+            show_playlist_episodes(episodes)
+            if radio_mix_url is not None:
+                start_playlist_playback(radio_mix_url)
+            if current_player is None:
+                radio_mix_active = False
+                stop_button.configure(state="disabled")
+                play_button.configure(state="normal")
+        root.after(100, poll_radio_mix_results)
+
     def play_local_files(paths: tuple[Path, ...]) -> None:
-        nonlocal current_player
-        current_player = None
+        nonlocal current_player, loaded_playlist_path
+        clear_playlist_selection()
+        stop_current_player()
         set_playback_lamp(False)
         clear_video_info()
         missing_path = next((path for path in paths if not path.is_file()), None)
@@ -1095,6 +1966,21 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         if not paths:
             status.set("Drop a local media file, playlist, or HTTP(S) URL.")
             return
+        if len(paths) == 1:
+            playlist_file = paths[0]
+            try:
+                episodes = read_local_playlist_episodes(playlist_file)
+            except OSError as error:
+                status.set(f"Could not read local playlist: {error}")
+                return
+            if episodes is not None:
+                loaded_playlist_path = playlist_file.resolve()
+                url_entry.delete(0, tk.END)
+                url_entry.insert(0, str(loaded_playlist_path))
+                show_playlist_episodes(episodes)
+                request_episode_metadata(episodes, playlist_request)
+                start_playlist_playback(str(loaded_playlist_path))
+                return
         status.set("Starting local media in mpv...")
         root.update_idletasks()
         try:
@@ -1106,6 +1992,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             messagebox.showerror("Could not play local media", str(error), parent=root)
             return
         current_player = player
+        stop_button.configure(state="normal")
         set_playback_lamp(True, player.poll() is None)
         first_file = paths[0].resolve()
         request_video_info(
@@ -1132,13 +2019,23 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         widget.dnd_bind("<<Drop>>", on_drop)
 
     def play_entry() -> None:
-        url = extract_http_url(url_entry.get())
-        if url is None:
-            status.set("Enter a valid HTTP(S) URL.")
+        text = url_entry.get().strip()
+        url = extract_http_url(text)
+        if url is not None:
+            play_url(url)
             return
-        play_url(url)
+        if loaded_playlist_path is not None and text == str(loaded_playlist_path):
+            play_selected_episode(text)
+            return
+        local_path = Path(text).expanduser()
+        if local_path.is_file():
+            play_local_files((local_path,))
+            return
+        clear_playlist_selection()
+        status.set("Enter a valid HTTP(S) URL or local media path.")
 
     play_button.configure(command=play_entry)
+    stop_button.configure(command=stop_playback)
     status_row = ttk.Frame(frame)
     status_row.pack(fill="x", pady=(10, 0))
     status_label = ttk.Label(status_row, textvariable=status, wraplength=460)
@@ -1160,7 +2057,10 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     lamp_stopped = lamp_canvas.create_rectangle(
         4, 4, 14, 14, fill="#000000", outline="#000000", state="hidden"
     )
+    root.after(100, poll_playlist_results)
+    root.after(100, poll_radio_mix_results)
     root.mainloop()
+    playlist_tempdir.cleanup()
     return 0
 
 

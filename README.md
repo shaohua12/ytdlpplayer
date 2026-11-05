@@ -21,9 +21,25 @@ python .\dlpplayer.py gui
 
 With no arguments, the program opens the GUI. Drop a video link or the URL from
 the browser address bar onto the window, or drop local video files and playlist
-files. Dropped local files open directly in mpv; multiple files play in order.
+files. Local video files open directly in mpv; multiple files play in order.
+M3U/M3U8 and supported URL playlists start at episode 1 and continue in order.
+The episode dropdown is shown when items can be enumerated; select an episode
+and press **Play in mpv** to restart from there and continue through the list.
+YouTube playlists start in mpv while episode details load in the background
+when available. `RD...` radio mixes are fetched ten items at a time; each batch
+plays in order, then the app loads the next until **Stop** is pressed. These
+dynamic mixes have no fixed last item. Closing mpv ends the current batch and
+continues with the next; use **Stop** in DLPPlayer to end the mix.
+When yt-dlp provides titles, mpv's playlist displays them instead of raw watch
+URLs, including items that have not started playing yet.
+
+Episode rows show source titles and runtimes when available. Local HLS runtimes
+are read from completed stream manifests.
+
 The GUI accepts HTTP(S) URLs supported by yt-dlp. You can also paste a link and
 press **Play in mpv**.
+
+Single-video URLs play with the same button.
 
 The window title prompts "Drop a video, playlist, or link."
 The information panel shows the video title prominently and hides when mpv exits.
