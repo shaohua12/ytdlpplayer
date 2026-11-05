@@ -84,6 +84,23 @@ class HttpUrlTests(unittest.TestCase):
         self.assertFalse(is_http_url("file:///tmp/video.mp4"))
         self.assertFalse(is_http_url("not a url"))
 
+    def test_direct_video_urls_skip_playlist_inspection(self):
+        self.assertFalse(
+            dlpplayer._should_inspect_playlist_first(
+                "https://media.example/watch?id=123"
+            )
+        )
+        self.assertTrue(
+            dlpplayer._should_inspect_playlist_first(
+                "https://media.example/playlist?id=123"
+            )
+        )
+        self.assertTrue(
+            dlpplayer._should_inspect_playlist_first(
+                "https://www.bilibili.com/video/BV123"
+            )
+        )
+
     def test_extracts_any_http_url_from_drag_payload(self):
         url = "https://www.bilibili.com/video/BV123"
         self.assertEqual(extract_http_url(f"Link to video: {url} (open)"), url)
@@ -192,6 +209,23 @@ class MpvIpcServerTests(unittest.TestCase):
 
         self.assertEqual(first_endpoint, repeated_endpoint)
         self.assertNotEqual(first_endpoint, second_endpoint)
+
+    def test_replacing_mpv_media_unpauses_after_loading(self):
+        with patch.object(
+            dlpplayer, "_send_mpv_ipc_command_retry", return_value=True
+        ) as send:
+            loaded = dlpplayer._load_mpv_content(
+                "ipc", ["loadfile", "https://media.example/video", "replace"]
+            )
+
+        self.assertTrue(loaded)
+        self.assertEqual(
+            [item.args[1] for item in send.call_args_list],
+            [
+                ["loadfile", "https://media.example/video", "replace"],
+                ["set_property", "pause", False],
+            ],
+        )
 
     def test_ipc_command_retries_transient_connection_failures(self):
         with (
@@ -304,6 +338,7 @@ class MpvUrlCommandTests(unittest.TestCase):
             use_cookies=False,
         )
 
+        self.assertIn("--pause=no", command)
         self.assertIn("--idle=yes", command)
         self.assertIn("--force-window=yes", command)
 

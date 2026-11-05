@@ -147,6 +147,11 @@ def is_playlist_url_hint(url: str) -> bool:
     path = parsed.path.lower()
     return any(marker in path for marker in ("/playlist", "/medialist/", "/series/"))
 
+
+def _should_inspect_playlist_first(url: str) -> bool:
+    return is_bilibili_url(url) or is_playlist_url_hint(url)
+
+
 def _youtube_playlist_url(url: str) -> str | None:
     if not is_youtube_url(url):
         return None
@@ -290,6 +295,7 @@ def _build_mpv_playlist_command(
         raise ValueError("At least one playlist item is required.")
     command = [
         mpv,
+        "--pause=no",
         f"--script-opts=ytdl_hook-ytdl_path={yt_dlp}",
         f"--ytdl-format={VIDEO_FORMAT_DEFAULT}",
     ]
@@ -378,6 +384,12 @@ def _send_mpv_ipc_command_retry(
     return False
 
 
+def _load_mpv_content(server: str, command: list[object]) -> bool:
+    if not _send_mpv_ipc_command_retry(server, command):
+        return False
+    return _send_mpv_ipc_command_retry(server, ["set_property", "pause", False])
+
+
 def _mpv_ipc_request(server: str, command: list[object]) -> dict[str, object] | None:
     request_id = uuid.uuid4().int & ((1 << 63) - 1)
     message = json.dumps(
@@ -412,12 +424,13 @@ def _open_mpv_media(media_file: Path, mpv_option: str | None = None) -> int:
     ipc_server = _mpv_ipc_server_path()
     media_path = str(media_file.resolve())
     command = ["loadfile", media_path, "replace"]
-    if _send_mpv_ipc_command(ipc_server, command):
+    if _load_mpv_content(ipc_server, command):
         return 0
 
     mpv = resolve_tool(mpv_option, "DLPPLAYER_MPV", MPV_DEFAULT, "mpv")
     launch_command = [
         mpv,
+        "--pause=no",
         "--idle=yes",
         "--force-window=yes",
         f"--input-ipc-server={ipc_server}",
@@ -426,7 +439,7 @@ def _open_mpv_media(media_file: Path, mpv_option: str | None = None) -> int:
     try:
         subprocess.Popen(launch_command)
     except OSError:
-        if _send_mpv_ipc_command(ipc_server, command):
+        if _load_mpv_content(ipc_server, command):
             return 0
         raise
     return 0
@@ -2011,7 +2024,11 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 set_playback_lamp(True, not idle)
                 stop_button.configure(state="disabled" if idle else "normal")
                 play_button.configure(state="normal")
-                status.set(playback_status)
+                status.set(
+                    "Checking URL for playlist episodes..."
+                    if idle and pending_playlist_url is not None
+                    else playback_status
+                )
                 root.after(2000, check_player, None)
                 return
             current_player_ipc_server = None
@@ -2031,7 +2048,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 state="normal" if radio_mix_active else ("disabled" if idle else "normal")
             )
             play_button.configure(state="normal")
-            if radio_mix_active and idle:
+            if idle and pending_playlist_url is not None:
+                status.set("Checking URL for playlist episodes...")
+            elif radio_mix_active and idle:
                 status.set("Mix batch finished; loading the next batch...")
                 request_radio_mix_batch(radio_mix_next_start)
             elif radio_mix_active:
@@ -2077,7 +2096,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         if (
             (current_player is None or current_player.poll() is None)
             and current_player_ipc_server is not None
-            and _send_mpv_ipc_command_retry(
+            and _load_mpv_content(
                 current_player_ipc_server, ["loadfile", url, "replace"]
             )
         ):
@@ -2159,7 +2178,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         ):
             try:
                 _write_mpv_playlist(playlist_manifest_path, episodes)
-                jumped = _send_mpv_ipc_command_retry(
+                jumped = _load_mpv_content(
                     current_player_ipc_server,
                     ["loadlist", str(playlist_manifest_path), "replace"],
                 )
@@ -2219,6 +2238,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             else:
                 command = [
                     mpv,
+                    "--pause=no",
                     f"--input-ipc-server={ipc_server}",
                     "--idle=yes",
                     "--force-window=yes",
@@ -2373,6 +2393,10 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             pending_playlist_url = None
             start_playback(url, url)
             return
+        elif not _should_inspect_playlist_first(url):
+            pending_playlist_url = None
+            start_playback(url, url)
+            return
         try:
             yt_dlp = resolve_tool(None, "DLPPLAYER_YTDLP", YTDLP_DEFAULT, "yt-dlp")
             node_runtime = None
@@ -2426,18 +2450,14 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 if playlist_playing_url == url:
                     status.set("Episode list unavailable; mpv playback was started.")
                 else:
-                    youtube_playlist = _youtube_playlist_url(url)
-                    if youtube_playlist is not None and start_playback(
-                        youtube_playlist, url
-                    ):
+                    playback_url = _youtube_playlist_url(url) or url
+                    if start_playback(playback_url, url):
                         playlist_playing_url = url
                 continue
             if episodes is None or not episodes:
                 if playlist_playing_url != url:
-                    youtube_playlist = _youtube_playlist_url(url)
-                    if youtube_playlist is not None and start_playback(
-                        youtube_playlist, url
-                    ):
+                    playback_url = _youtube_playlist_url(url) or url
+                    if start_playback(playback_url, url):
                         playlist_playing_url = url
                 elif not episodes:
                     status.set("No episode list was returned; mpv playback continues.")
@@ -2552,7 +2572,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         ):
             try:
                 _write_mpv_playlist(playlist_manifest_path, local_episodes)
-                reused = _send_mpv_ipc_command_retry(
+                reused = _load_mpv_content(
                     current_player_ipc_server,
                     ["loadlist", str(playlist_manifest_path), "replace"],
                 )
@@ -2582,6 +2602,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             _write_mpv_playlist(playlist_manifest_path, local_episodes)
             command = [
                 mpv,
+                "--pause=no",
                 "--idle=yes",
                 "--force-window=yes",
                 f"--input-ipc-server={ipc_server}",
