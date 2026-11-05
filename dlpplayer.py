@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import math
 import os
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +34,7 @@ YOUTUBE_COMMENT_FETCH_LIMIT = 100
 VIDEO_COMMENT_DISPLAY_LIMIT = 100
 BILIBILI_COMMENT_PAGE_SIZE = 20
 BILIBILI_COMMENT_TIMEOUT = 5
+BILIBILI_VIDEO_METADATA_TIMEOUT = 10
 HLS_METADATA_TIMEOUT = 10
 IDLE_WINDOW_MIN_HEIGHT = 150
 OUTPUT_DEFAULT = Path(__file__).resolve().parent
@@ -386,6 +389,9 @@ def _write_mpv_playlist(
     for episode in episodes:
         duration = episode.duration_seconds
         title = " ".join(episode.title.split())
+        formatted_duration = _format_duration(duration)
+        if formatted_duration:
+            title = f"{title} ({formatted_duration})"
         lines.extend(
             (
                 f"#EXTINF:{duration if duration is not None else -1},{title}",
@@ -484,6 +490,75 @@ def _playlist_episode_label(index: int, episode: PlaylistEpisode) -> str:
     label = f"{index}. {episode.title}"
     duration = _format_duration(episode.duration_seconds)
     return f"{label}  {duration}" if duration else label
+
+
+def _fetch_bilibili_video_episodes(
+    url: str,
+) -> tuple[PlaylistEpisode, ...] | None:
+    try:
+        parsed_url = urlsplit(url)
+    except ValueError:
+        return None
+    host = (parsed_url.hostname or "").lower().rstrip(".")
+    if host != "bilibili.com" and not host.endswith(".bilibili.com"):
+        return None
+    video_match = re.fullmatch(
+        r"/video/(BV[A-Za-z0-9]+|av\d+)/?", parsed_url.path, re.IGNORECASE
+    )
+    if video_match is None:
+        return None
+
+    video_id = video_match.group(1)
+    request = Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://www.bilibili.com/",
+            "Accept-Encoding": "gzip",
+        },
+    )
+    try:
+        with urlopen(request, timeout=BILIBILI_VIDEO_METADATA_TIMEOUT) as response:
+            page = response.read()
+            content_encoding = response.headers.get("Content-Encoding", "").lower()
+        if content_encoding == "gzip":
+            page = gzip.decompress(page)
+        html = page.decode("utf-8-sig", errors="replace")
+        state_marker = re.search(r"window\.__INITIAL_STATE__\s*=\s*", html)
+        if state_marker is None:
+            return None
+        state, _ = json.JSONDecoder().raw_decode(html[state_marker.end() :])
+    except (OSError, EOFError, ValueError, zlib.error):
+        return None
+
+    video_data = state.get("videoData") if isinstance(state, dict) else None
+    pages = video_data.get("pages") if isinstance(video_data, dict) else None
+    if not isinstance(pages, list) or len(pages) <= 1:
+        return None
+
+    episodes = []
+    for index, page_data in enumerate(pages, start=1):
+        if not isinstance(page_data, dict):
+            continue
+        raw_page_number = page_data.get("page")
+        page_number = (
+            raw_page_number
+            if isinstance(raw_page_number, int) and raw_page_number > 0
+            else index
+        )
+        title = page_data.get("part")
+        if not isinstance(title, str) or not title.strip():
+            title = f"Episode {page_number}"
+        episodes.append(
+            PlaylistEpisode(
+                title.strip(),
+                f"https://www.bilibili.com/video/{video_id}?{urlencode({'p': page_number})}",
+                _duration_seconds(page_data.get("duration")),
+            )
+        )
+    return tuple(episodes) if episodes else None
+
+
 
 
 def _metadata_text(value: object) -> str | None:
@@ -1026,6 +1101,9 @@ def _fetch_playlist_episodes(
 def fetch_playlist_episodes(
     yt_dlp: str, url: str, node_runtime: str | None = None
 ) -> tuple[PlaylistEpisode, ...] | None:
+    bilibili_episodes = _fetch_bilibili_video_episodes(url)
+    if bilibili_episodes is not None:
+        return bilibili_episodes
     return _fetch_playlist_episodes(yt_dlp, url, node_runtime)
 
 

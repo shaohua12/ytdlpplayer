@@ -34,7 +34,8 @@ When yt-dlp provides titles, mpv's playlist displays them instead of raw watch
 URLs, including items that have not started playing yet.
 
 Episode rows show source titles and runtimes when available. Local HLS runtimes
-are read from completed stream manifests.
+are read from completed stream manifests. Multi-part Bilibili videos use each
+page's per-part title and duration in the episode list and MPV playlist.
 
 The GUI accepts HTTP(S) URLs supported by yt-dlp. You can also paste a link and
 press **Play in mpv**.

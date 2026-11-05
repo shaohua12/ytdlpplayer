@@ -239,7 +239,7 @@ class MpvUrlCommandTests(unittest.TestCase):
             lines,
             [
                 "#EXTM3U",
-                "#EXTINF:75,First track",
+                "#EXTINF:75,First track (1:15)",
                 "https://media.example/1",
                 "#EXTINF:-1,Second track",
                 "https://media.example/2",
@@ -392,6 +392,45 @@ class PlaylistEpisodeTests(unittest.TestCase):
                 ),
             ),
         )
+
+    def test_reads_bilibili_part_titles_and_durations(self):
+        url = "https://www.bilibili.com/video/BV14tsEzVEub/"
+        html = (
+            '<script>window.__INITIAL_STATE__={"videoData":{"pages":['
+            '{"page":1,"part":"C语言前言简介","duration":55},'
+            '{"page":2,"part":"0、C语言课程介绍","duration":776}]}};</script>'
+        )
+
+        class FakeResponse(BytesIO):
+            headers = {"Content-Encoding": "identity"}
+
+        with patch.object(
+            dlpplayer, "urlopen", return_value=FakeResponse(html.encode("utf-8"))
+        ) as open_page:
+            with patch.object(dlpplayer.subprocess, "run") as run:
+                episodes = dlpplayer.fetch_playlist_episodes("yt-dlp.exe", url)
+
+        self.assertEqual(
+            episodes,
+            (
+                dlpplayer.PlaylistEpisode(
+                    "C语言前言简介",
+                    "https://www.bilibili.com/video/BV14tsEzVEub?p=1",
+                    55,
+                ),
+                dlpplayer.PlaylistEpisode(
+                    "0、C语言课程介绍",
+                    "https://www.bilibili.com/video/BV14tsEzVEub?p=2",
+                    776,
+                ),
+            ),
+        )
+        self.assertEqual(
+            dlpplayer._playlist_episode_label(1, episodes[0]),
+            "1. C语言前言简介  0:55",
+        )
+        open_page.assert_called_once()
+        run.assert_not_called()
 
     def test_returns_none_for_non_playlist_metadata(self):
         result = SimpleNamespace(
