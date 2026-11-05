@@ -25,11 +25,13 @@ files. Local video files open directly in mpv; multiple files play in order.
 M3U/M3U8 and supported URL playlists start at episode 1 and continue in order.
 The episode dropdown is shown when items can be enumerated. Selecting an episode
 switches the current MPV player to it and continues through the remaining list.
-YouTube playlists start in mpv while episode details load in the background
-when available. `RD...` radio mixes are fetched ten items at a time; each batch
-plays in order, then the app loads the next until **Stop** is pressed. These
-dynamic mixes have no fixed last item. Closing mpv ends the current batch and
-continues with the next; use **Stop** in DLPPlayer to end the mix.
+A DLPPlayer-managed MPV process stays open after normal playback finishes. GUI and
+CLI playback reuse that per-user process for subsequent URLs, playlists, and local
+media. **Stop** stops normal playback but leaves MPV ready. An MPV started
+independently without DLPPlayer's IPC endpoint cannot be attached. `RD...` radio
+mixes use ten-item batches; each batch plays in order, and the next batch loads
+when MPV finishes. Use **Stop** to end the mix; closing MPV also ends the current
+batch before continuing.
 When yt-dlp provides titles, mpv's playlist displays them instead of raw watch
 URLs, including items that have not started playing yet.
 
@@ -66,9 +68,14 @@ python .\dlpplayer.py play <FILE> [--mpv PATH]
 
 `download` accepts one HTTP(S) video URL supported by yt-dlp. It downloads into
 the directory containing `dlpplayer.py` by default, names the file using its title
-and video ID, and merges the output into MP4. Use `--play` to open the completed
-download in mpv. `-o`/`--output-dir` selects another download directory. The
-download command handles one video at a time; use the GUI for playlists.
+and video ID, and merges the output into MP4. `--play` hands the completed download
+to the shared MPV session. `-o`/`--output-dir` selects another directory. The
+command handles one video at a time; use the GUI for playlists.
+
+`play` also sends local files to that session. If no session exists, DLPPlayer
+starts MPV in idle mode; GUI and CLI playback reuse it across app invocations.
+Commands return after handing media to MPV. `--mpv` is used only when DLPPlayer
+needs to start MPV.
 
 ```powershell
 python .\dlpplayer.py download "https://www.bilibili.com/video/BV..." --play
@@ -82,7 +89,8 @@ Download options:
   containing `dlpplayer.py`.
 - `-f`, `--format SELECTOR`: yt-dlp format selector; defaults to the best
   video up to 1080p plus audio.
-- `--play`: play the downloaded file with mpv after the download succeeds.
+- `--play`: send the downloaded file to the shared MPV session after download
+  succeeds.
 - `--firefox-profile NAME_OR_PATH`: use the selected Firefox profile. By
   default yt-dlp reads cookies from Firefox's default profile.
 - `--no-cookies`: do not read Firefox cookies.

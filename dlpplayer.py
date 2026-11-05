@@ -230,6 +230,7 @@ def _build_mpv_playlist_command(
     use_cookies: bool = True,
     playlist_file: str | None = None,
     ipc_server: str | None = None,
+    keep_open: bool = True,
 ) -> list[str]:
     if not urls:
         raise ValueError("At least one playlist item is required.")
@@ -238,6 +239,8 @@ def _build_mpv_playlist_command(
         f"--script-opts=ytdl_hook-ytdl_path={yt_dlp}",
         f"--ytdl-format={VIDEO_FORMAT_DEFAULT}",
     ]
+    if keep_open:
+        command.extend(["--idle=yes", "--force-window=yes"])
     if ipc_server:
         command.append(f"--input-ipc-server={ipc_server}")
     raw_options = []
@@ -266,6 +269,7 @@ def build_mpv_url_command(
     firefox_profile: str | None = None,
     use_cookies: bool = True,
     ipc_server: str | None = None,
+    keep_open: bool = True,
 ) -> list[str]:
     return _build_mpv_playlist_command(
         mpv,
@@ -275,14 +279,18 @@ def build_mpv_url_command(
         firefox_profile,
         use_cookies,
         ipc_server=ipc_server,
+        keep_open=keep_open,
     )
 
-
-def _new_mpv_ipc_server(directory: Path) -> str:
-    name = f"dlpplayer-{uuid.uuid4().hex}"
+def _mpv_ipc_server_path() -> str:
+    home = str(Path.home())
+    if os.name == "nt":
+        home = home.casefold()
+    user_key = uuid.uuid5(uuid.NAMESPACE_URL, home).hex[:16]
+    name = f"dlpplayer-{user_key}"
     if os.name == "nt":
         return rf"\\.\pipe\{name}"
-    return str(directory / f"{name}.sock")
+    return str(Path(tempfile.gettempdir()) / f"{name}.sock")
 
 
 def _send_mpv_ipc_command(server: str, command: list[object]) -> bool:
@@ -300,6 +308,60 @@ def _send_mpv_ipc_command(server: str, command: list[object]) -> bool:
         return True
     except OSError:
         return False
+
+
+def _mpv_ipc_request(server: str, command: list[object]) -> dict[str, object] | None:
+    request_id = uuid.uuid4().int & ((1 << 63) - 1)
+    message = json.dumps(
+        {"command": command, "request_id": request_id},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8") + b"\n"
+    try:
+        if os.name == "nt":
+            with open(server, "r+b", buffering=0) as connection:
+                connection.write(message)
+                while line := connection.readline():
+                    response = json.loads(line)
+                    if response.get("request_id") == request_id:
+                        return response
+            return None
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(1.0)
+            connection.connect(server)
+            connection.sendall(message)
+            with connection.makefile("rb") as stream:
+                while line := stream.readline():
+                    response = json.loads(line)
+                    if response.get("request_id") == request_id:
+                        return response
+        return None
+    except (OSError, ValueError):
+        return None
+
+
+def _open_mpv_media(media_file: Path, mpv_option: str | None = None) -> int:
+    ipc_server = _mpv_ipc_server_path()
+    media_path = str(media_file.resolve())
+    command = ["loadfile", media_path, "replace"]
+    if _send_mpv_ipc_command(ipc_server, command):
+        return 0
+
+    mpv = resolve_tool(mpv_option, "DLPPLAYER_MPV", MPV_DEFAULT, "mpv")
+    launch_command = [
+        mpv,
+        "--idle=yes",
+        "--force-window=yes",
+        f"--input-ipc-server={ipc_server}",
+        media_path,
+    ]
+    try:
+        subprocess.Popen(launch_command)
+    except OSError:
+        if _send_mpv_ipc_command(ipc_server, command):
+            return 0
+        raise
+    return 0
 
 
 def build_video_info_command(
@@ -1301,9 +1363,6 @@ def download(args: argparse.Namespace) -> int:
         ffmpeg = resolve_tool(
             args.ffmpeg, "DLPPLAYER_FFMPEG", FFMPEG_DEFAULT, "ffmpeg", allow_directory=True
         )
-        mpv = None
-        if args.play:
-            mpv = resolve_tool(args.mpv, "DLPPLAYER_MPV", MPV_DEFAULT, "mpv")
         args.output_dir.mkdir(parents=True, exist_ok=True)
 
         with tempfile.TemporaryDirectory(prefix="dlpplayer-") as temporary_directory:
@@ -1323,7 +1382,7 @@ def download(args: argparse.Namespace) -> int:
             if result.returncode:
                 return result.returncode
 
-            if args.play and mpv:
+            if args.play:
                 result_path = Path(result_file)
                 if not result_path.is_file():
                     print("Error: yt-dlp completed but did not report the downloaded file.", file=sys.stderr)
@@ -1332,7 +1391,7 @@ def download(args: argparse.Namespace) -> int:
                 if not downloaded_file.is_file():
                     print(f"Error: downloaded file was not found: {downloaded_file}", file=sys.stderr)
                     return 1
-                return subprocess.run([mpv, str(downloaded_file)], check=False).returncode
+                return _open_mpv_media(downloaded_file, args.mpv)
 
         return 0
     except (FileNotFoundError, OSError) as error:
@@ -1346,8 +1405,7 @@ def play(args: argparse.Namespace) -> int:
         print(f"Error: media file was not found: {media_file}", file=sys.stderr)
         return 2
     try:
-        mpv = resolve_tool(args.mpv, "DLPPLAYER_MPV", MPV_DEFAULT, "mpv")
-        return subprocess.run([mpv, str(media_file.resolve())], check=False).returncode
+        return _open_mpv_media(media_file, args.mpv)
     except (FileNotFoundError, OSError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
@@ -1646,7 +1704,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     root.after(100, poll_video_info)
     status = tk.StringVar(value="Ready.")
     current_player: subprocess.Popen | None = None
-    current_player_ipc_server: str | None = None
+    current_player_ipc_server: str | None = _mpv_ipc_server_path()
 
     def stop_current_player() -> None:
         nonlocal current_player, current_player_ipc_server
@@ -1667,14 +1725,23 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         radio_mix_url = None
         radio_mix_loading = False
         radio_mix_active = False
-        stop_current_player()
+        stopped = False
+        if (
+            current_player_ipc_server is not None
+            and (current_player is None or current_player.poll() is None)
+        ):
+            stopped = _send_mpv_ipc_command(current_player_ipc_server, ["stop"])
+        had_playback = had_playback or stopped
+        if not stopped:
+            stop_current_player()
         play_button.configure(state="normal")
         stop_button.configure(state="disabled")
         if had_playback:
-            set_playback_lamp(True, False)
+            set_playback_lamp(current_player is not None or stopped, False)
             clear_video_info()
-            status.set("Playback stopped.")
-
+            status.set("Playback stopped; MPV remains open." if stopped else "Playback stopped.")
+            if stopped and current_player is None:
+                root.after(2000, check_player, None)
 
     def set_playback_lamp(available: bool, playing: bool = False) -> None:
         if not available:
@@ -1689,9 +1756,31 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         lamp_canvas.pack(side="left", before=status_label, padx=(0, 6))
 
 
-    def check_player(player: subprocess.Popen) -> None:
+    def check_player(player: subprocess.Popen | None) -> None:
         nonlocal current_player, current_player_ipc_server, radio_mix_active
         if player is not current_player:
+            return
+        if player is None:
+            ipc_server = current_player_ipc_server
+            response = (
+                _mpv_ipc_request(ipc_server, ["get_property", "idle-active"])
+                if ipc_server is not None
+                else None
+            )
+            if response is not None and response.get("error") == "success":
+                idle = response.get("data") is True
+                set_playback_lamp(True, not idle)
+                status.set(
+                    "MPV is ready."
+                    if idle
+                    else "MPV is running; check its window for stream status."
+                )
+                root.after(2000, check_player, None)
+                return
+            current_player_ipc_server = None
+            set_playback_lamp(False)
+            stop_button.configure(state="disabled")
+            play_button.configure(state="normal")
             return
         if player.poll() is None:
             set_playback_lamp(True, True)
@@ -1721,15 +1810,32 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 f"mpv exited with code {player.returncode}; check its window for details."
             )
 
-    def start_playback(url: str, display_url: str) -> None:
+    def start_playback(url: str, display_url: str) -> bool:
         nonlocal current_player, current_player_ipc_server, playlist_playing_url
-        stop_current_player()
         playlist_playing_url = None
         set_playback_lamp(False)
         clear_video_info()
         if not is_http_url(url):
             status.set("Please use a valid HTTP(S) URL.")
-            return
+            return False
+        if (
+            (current_player is None or current_player.poll() is None)
+            and current_player_ipc_server is not None
+            and _send_mpv_ipc_command(
+                current_player_ipc_server, ["loadfile", url, "replace"]
+            )
+        ):
+            stop_button.configure(state="normal")
+            set_playback_lamp(True, True)
+            if _youtube_playlist_url(url) is None:
+                request_playlist_episode_info(PlaylistEpisode("Video", url))
+            url_entry.delete(0, tk.END)
+            url_entry.insert(0, display_url)
+            status.set("MPV switched to the requested video.")
+            if current_player is None:
+                root.after(2000, check_player, None)
+            return True
+        stop_current_player()
         status.set("URL validated. Starting mpv...")
         root.update_idletasks()
         try:
@@ -1740,7 +1846,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 node_runtime = resolve_tool(
                     None, "DLPPLAYER_NODE", NODE_DEFAULT, "node"
                 )
-            ipc_server = _new_mpv_ipc_server(Path(playlist_tempdir.name))
+            ipc_server = _mpv_ipc_server_path()
             command = build_mpv_url_command(
                 mpv,
                 yt_dlp,
@@ -1752,7 +1858,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         except (FileNotFoundError, OSError) as error:
             status.set(f"Could not start mpv: {error}")
             messagebox.showerror("Could not play URL", str(error), parent=root)
-            return
+            return False
         current_player = player
         current_player_ipc_server = ipc_server
         stop_button.configure(state="normal")
@@ -1765,6 +1871,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         url_entry.insert(0, display_url)
         status.set("mpv started successfully; yt-dlp is resolving the stream.")
         root.after(2000, check_player, player)
+        return True
 
     def start_playlist_playback(display_url: str, start_index: int = 0) -> None:
         nonlocal current_player, current_player_ipc_server, playlist_playing_url
@@ -1787,8 +1894,8 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             return
 
         if (
-            current_player is not None
-            and current_player.poll() is None
+            (current_player is None or current_player.poll() is None)
+            and not radio_mix_active
             and current_player_ipc_server is not None
         ):
             try:
@@ -1809,6 +1916,8 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 url_entry.insert(0, display_url)
                 clear_video_info()
                 request_playlist_episode_info(first_episode)
+                if current_player is None:
+                    root.after(2000, check_player, None)
                 status.set(
                     f"MPV jumped to {first_episode.title}; "
                     f"{len(targets)} episodes queued."
@@ -1825,7 +1934,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         node_runtime = None
         try:
             mpv = resolve_tool(None, "DLPPLAYER_MPV", MPV_DEFAULT, "mpv")
-            ipc_server = _new_mpv_ipc_server(Path(playlist_tempdir.name))
+            ipc_server = _mpv_ipc_server_path()
             _write_mpv_playlist(playlist_manifest_path, episodes)
             if any(is_http_url(target) for target in targets):
                 yt_dlp = resolve_tool(
@@ -1842,11 +1951,14 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                     node_runtime,
                     playlist_file=str(playlist_manifest_path),
                     ipc_server=ipc_server,
+                    keep_open=not radio_mix_active,
                 )
             else:
                 command = [
                     mpv,
                     f"--input-ipc-server={ipc_server}",
+                    "--idle=yes",
+                    "--force-window=yes",
                     f"--playlist={playlist_manifest_path}",
                 ]
             player = subprocess.Popen(command)
@@ -1956,7 +2068,6 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         clear_playlist_selection()
         request_id = playlist_request
         pending_playlist_url = url
-        stop_current_player()
         set_playback_lamp(False)
         clear_video_info()
         url_entry.delete(0, tk.END)
@@ -1983,8 +2094,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             start_radio_mix(url, yt_dlp, node_runtime)
             return
         if youtube_playlist is not None:
-            start_playback(youtube_playlist, url)
-            if current_player is None:
+            if not start_playback(youtube_playlist, url):
                 pending_playlist_url = None
                 play_button.configure(state="normal")
                 return
@@ -2048,15 +2158,17 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                     status.set("Episode list unavailable; mpv playback was started.")
                 else:
                     youtube_playlist = _youtube_playlist_url(url)
-                    start_playback(youtube_playlist or url, url)
-                    if youtube_playlist is not None and current_player is not None:
+                    if youtube_playlist is not None and start_playback(
+                        youtube_playlist, url
+                    ):
                         playlist_playing_url = url
                 continue
             if episodes is None or not episodes:
                 if playlist_playing_url != url:
                     youtube_playlist = _youtube_playlist_url(url)
-                    start_playback(youtube_playlist or url, url)
-                    if youtube_playlist is not None and current_player is not None:
+                    if youtube_playlist is not None and start_playback(
+                        youtube_playlist, url
+                    ):
                         playlist_playing_url = url
                 elif not episodes:
                     status.set("No episode list was returned; mpv playback continues.")
@@ -2133,9 +2245,8 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         root.after(100, poll_radio_mix_results)
 
     def play_local_files(paths: tuple[Path, ...]) -> None:
-        nonlocal current_player, loaded_playlist_path
+        nonlocal current_player, current_player_ipc_server, loaded_playlist_path
         clear_playlist_selection()
-        stop_current_player()
         set_playback_lamp(False)
         clear_video_info()
         missing_path = next((path for path in paths if not path.is_file()), None)
@@ -2162,15 +2273,54 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 return
         status.set("Starting local media in mpv...")
         root.update_idletasks()
+
+        local_episodes = tuple(
+            PlaylistEpisode(path.stem, str(path.resolve())) for path in paths
+        )
+        if (
+            (current_player is None or current_player.poll() is None)
+            and current_player_ipc_server is not None
+        ):
+            try:
+                _write_mpv_playlist(playlist_manifest_path, local_episodes)
+                reused = _send_mpv_ipc_command(
+                    current_player_ipc_server,
+                    ["loadlist", str(playlist_manifest_path), "replace"],
+                )
+            except OSError:
+                reused = False
+            if reused:
+                stop_button.configure(state="normal")
+                set_playback_lamp(True, True)
+                first_file = paths[0].resolve()
+                request_video_info(
+                    lambda: fetch_local_video_info(
+                        resolve_ffprobe_tool(), first_file
+                    )
+                )
+                status.set("MPV switched to local media.")
+                if current_player is None:
+                    root.after(2000, check_player, None)
+                return
+        stop_current_player()
         try:
             mpv = resolve_tool(None, "DLPPLAYER_MPV", MPV_DEFAULT, "mpv")
-            command = [mpv, *(str(path.resolve()) for path in paths)]
+            ipc_server = _mpv_ipc_server_path()
+            _write_mpv_playlist(playlist_manifest_path, local_episodes)
+            command = [
+                mpv,
+                "--idle=yes",
+                "--force-window=yes",
+                f"--input-ipc-server={ipc_server}",
+                f"--playlist={playlist_manifest_path}",
+            ]
             player = subprocess.Popen(command)
         except (FileNotFoundError, OSError) as error:
             status.set(f"Could not start mpv: {error}")
             messagebox.showerror("Could not play local media", str(error), parent=root)
             return
         current_player = player
+        current_player_ipc_server = ipc_server
         stop_button.configure(state="normal")
         set_playback_lamp(True, player.poll() is None)
         first_file = paths[0].resolve()

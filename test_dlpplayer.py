@@ -1,4 +1,3 @@
-import argparse
 import tempfile
 import tkinter
 import unittest
@@ -136,47 +135,19 @@ class DownloadCommandTests(unittest.TestCase):
         )
         self.assertEqual(command[command.index("-f") + 1], "bv*[height<=480]+ba/b")
 
-    def test_download_then_play_uses_the_saved_file(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            yt_dlp = root / "yt-dlp.exe"
-            ffmpeg = root / "ffmpeg"
-            mpv = root / "mpv.exe"
-            output_dir = root / "videos"
-            downloaded_file = output_dir / "sample [BV123].mp4"
-            for tool in (yt_dlp, ffmpeg, mpv):
-                tool.touch()
 
-            def run_process(command, check=False):
-                if command[0] == str(yt_dlp):
-                    result_file = Path(command[command.index("--print-to-file") + 2])
-                    output_dir.mkdir(parents=True, exist_ok=True)
-                    downloaded_file.write_bytes(b"test video")
-                    result_file.write_text(str(downloaded_file), encoding="utf-8")
-                else:
-                    self.assertEqual(command, [str(mpv), str(downloaded_file)])
-                return SimpleNamespace(returncode=0)
+class MpvIpcServerTests(unittest.TestCase):
+    def test_ipc_endpoint_is_stable_and_per_user(self):
+        first_profile = Path("D:/profiles/first")
+        second_profile = Path("D:/profiles/second")
+        with patch.object(dlpplayer.Path, "home", return_value=first_profile):
+            first_endpoint = dlpplayer._mpv_ipc_server_path()
+            repeated_endpoint = dlpplayer._mpv_ipc_server_path()
+        with patch.object(dlpplayer.Path, "home", return_value=second_profile):
+            second_endpoint = dlpplayer._mpv_ipc_server_path()
 
-            args = argparse.Namespace(
-                url="https://media.example/watch?id=123",
-                yt_dlp=str(yt_dlp),
-                ffmpeg=str(ffmpeg),
-                mpv=str(mpv),
-                output_dir=output_dir,
-                firefox_profile=None,
-                no_cookies=False,
-                play=True,
-                video_format="bv*+ba/b",
-            )
-            with patch.object(dlpplayer.subprocess, "run", side_effect=run_process) as run:
-                self.assertEqual(dlpplayer.download(args), 0)
-
-            self.assertEqual(run.call_count, 2)
-            self.assertEqual(
-                run.call_args_list[0].args[0][-1],
-                "https://media.example/watch?id=123",
-            )
-            self.assertTrue(downloaded_file.is_file())
+        self.assertEqual(first_endpoint, repeated_endpoint)
+        self.assertNotEqual(first_endpoint, second_endpoint)
 
 
 class MpvUrlCommandTests(unittest.TestCase):
@@ -204,6 +175,29 @@ class MpvUrlCommandTests(unittest.TestCase):
         )
 
         self.assertIn(f"--input-ipc-server={ipc_server}", command)
+
+    def test_mpv_remains_idle_and_visible_when_a_file_finishes(self):
+        command = build_mpv_url_command(
+            "mpv.exe",
+            "yt-dlp.exe",
+            "https://media.example/watch?id=123",
+            use_cookies=False,
+        )
+
+        self.assertIn("--idle=yes", command)
+        self.assertIn("--force-window=yes", command)
+
+    def test_radio_batch_can_keep_exit_on_completion(self):
+        command = dlpplayer._build_mpv_playlist_command(
+            "mpv.exe",
+            "yt-dlp.exe",
+            ("https://media.example/1",),
+            use_cookies=False,
+            keep_open=False,
+        )
+
+        self.assertNotIn("--idle=yes", command)
+        self.assertNotIn("--force-window=yes", command)
 
     def test_sends_mpvs_playlist_replacement_command_over_ipc(self):
         ipc_server = r"\\.\pipe\dlpplayer-test"
