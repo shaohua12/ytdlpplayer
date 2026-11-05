@@ -23,9 +23,8 @@ With no arguments, the program opens the GUI. Drop a video link or the URL from
 the browser address bar onto the window, or drop local video files and playlist
 files. Local video files open directly in mpv; multiple files play in order.
 M3U/M3U8 and supported URL playlists start at episode 1 and continue in order.
-The episode dropdown is hidden for single videos and playlists with no available
-items. When shown, select an episode and press **Play in mpv** to restart from
-there and continue through the list.
+The episode dropdown is shown when items can be enumerated. Selecting an episode
+switches the current MPV player to it and continues through the remaining list.
 YouTube playlists start in mpv while episode details load in the background
 when available. `RD...` radio mixes are fetched ten items at a time; each batch
 plays in order, then the app loads the next until **Stop** is pressed. These

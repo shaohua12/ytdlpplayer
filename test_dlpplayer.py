@@ -5,7 +5,7 @@ import unittest
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 import dlpplayer
 from dlpplayer import (
@@ -192,6 +192,36 @@ class MpvUrlCommandTests(unittest.TestCase):
         self.assertEqual(command[-1], url)
         self.assertIn(f"--ytdl-format={VIDEO_FORMAT_DEFAULT}", command)
         self.assertFalse(any("js-runtimes" in item for item in command))
+
+    def test_builds_mpv_command_with_ipc_server(self):
+        ipc_server = r"\\.\pipe\dlpplayer-test"
+        command = build_mpv_url_command(
+            "mpv.exe",
+            "yt-dlp.exe",
+            "https://media.example/watch?id=123",
+            use_cookies=False,
+            ipc_server=ipc_server,
+        )
+
+        self.assertIn(f"--input-ipc-server={ipc_server}", command)
+
+    def test_sends_mpvs_playlist_replacement_command_over_ipc(self):
+        ipc_server = r"\\.\pipe\dlpplayer-test"
+        pipe = mock_open()
+        pipe.return_value.write.return_value = len(
+            b'{"command":["loadlist","playlist.m3u","replace"]}\n'
+        )
+        with patch.object(dlpplayer.os, "name", "nt"):
+            with patch("builtins.open", pipe):
+                sent = dlpplayer._send_mpv_ipc_command(
+                    ipc_server, ["loadlist", "playlist.m3u", "replace"]
+                )
+
+        self.assertTrue(sent)
+        pipe.assert_called_once_with(ipc_server, "r+b", buffering=0)
+        pipe().write.assert_called_once_with(
+            b'{"command":["loadlist","playlist.m3u","replace"]}\n'
+        )
 
     def test_builds_mpv_command_with_ordered_youtube_items(self):
         urls = (
