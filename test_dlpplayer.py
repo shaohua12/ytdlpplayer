@@ -193,6 +193,68 @@ class MpvIpcServerTests(unittest.TestCase):
         self.assertEqual(first_endpoint, repeated_endpoint)
         self.assertNotEqual(first_endpoint, second_endpoint)
 
+    def test_ipc_command_retries_transient_connection_failures(self):
+        with (
+            patch.object(
+                dlpplayer,
+                "_send_mpv_ipc_command",
+                side_effect=[False, False, True],
+            ) as send,
+            patch.object(dlpplayer.time, "sleep") as sleep,
+        ):
+            sent = dlpplayer._send_mpv_ipc_command_retry(
+                "ipc", ["stop"], attempts=3
+            )
+
+        self.assertTrue(sent)
+        self.assertEqual(send.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_ipc_command_stops_retrying_after_attempt_limit(self):
+        with (
+            patch.object(dlpplayer, "_send_mpv_ipc_command", return_value=False) as send,
+            patch.object(dlpplayer.time, "sleep") as sleep,
+        ):
+            sent = dlpplayer._send_mpv_ipc_command_retry(
+                "ipc", ["stop"], attempts=2
+            )
+
+        self.assertFalse(sent)
+        self.assertEqual(send.call_count, 2)
+        self.assertEqual(sleep.call_count, 1)
+
+
+class MpvProgressTests(unittest.TestCase):
+    def test_formats_playback_time_and_percentage(self):
+        self.assertEqual(dlpplayer._format_mpv_time(3661.9), "1:01:01")
+        self.assertEqual(
+            dlpplayer._format_mpv_progress(65, 300),
+            "Playing | 1:05 / 5:00 (22%)",
+        )
+
+    def test_formats_paused_playback_without_known_duration(self):
+        self.assertEqual(
+            dlpplayer._format_mpv_progress(65, None, paused=True),
+            "Paused | 1:05",
+        )
+
+    def test_reads_status_from_mpv_properties(self):
+        with patch.object(
+            dlpplayer,
+            "_mpv_property_value",
+            side_effect=[False, 65, 300, False],
+        ):
+            status = dlpplayer._mpv_status_text("ipc")
+
+        self.assertEqual(status, "Playing | 1:05 / 5:00 (22%)")
+
+    def test_reports_idle_player_as_ready(self):
+        with patch.object(dlpplayer, "_mpv_property_value", return_value=True) as prop:
+            status = dlpplayer._mpv_status_text("ipc")
+
+        self.assertEqual(status, "MPV is ready.")
+        prop.assert_called_once_with("ipc", "idle-active")
+
 
 class MpvUrlCommandTests(unittest.TestCase):
     def test_builds_command_for_generic_http_url(self):
@@ -317,6 +379,43 @@ class MpvUrlCommandTests(unittest.TestCase):
             ],
         )
 
+    def test_saves_and_reloads_local_m3u_playlist(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            local_file = root / "local video.mp4"
+            local_file.touch()
+            output = root / "saved playlist.m3u8"
+            episodes = (
+                dlpplayer.PlaylistEpisode(
+                    "First\nepisode", "https://media.example/watch/1", 92
+                ),
+                dlpplayer.PlaylistEpisode("Local episode", str(local_file.resolve())),
+            )
+
+            dlpplayer._write_local_m3u_playlist(output, episodes)
+            lines = output.read_text(encoding="utf-8").splitlines()
+            loaded = dlpplayer.read_local_playlist_episodes(output)
+
+        self.assertEqual(
+            lines,
+            [
+                "#EXTM3U",
+                "#EXTINF:92,First episode",
+                "https://media.example/watch/1",
+                "#EXTINF:-1,Local episode",
+                str(local_file.resolve()),
+            ],
+        )
+        self.assertEqual(
+            loaded,
+            (
+                dlpplayer.PlaylistEpisode(
+                    "First episode", "https://media.example/watch/1", 92
+                ),
+                dlpplayer.PlaylistEpisode("Local episode", str(local_file.resolve())),
+            ),
+        )
+
     def test_canonicalizes_youtube_watch_playlist_url(self):
         url = (
             "https://www.youtube.com/watch?v=video1&list=PL123&start_radio=1"
@@ -383,6 +482,25 @@ class VideoInfoCommandTests(unittest.TestCase):
 
 
 class PlaylistEpisodeTests(unittest.TestCase):
+    def test_suggests_meaningful_playlist_filenames(self):
+        episodes = (
+            dlpplayer.PlaylistEpisode("My: Show / Episode 1", "https://example.com/1"),
+            dlpplayer.PlaylistEpisode("Episode 2", "https://example.com/2"),
+        )
+
+        self.assertEqual(
+            dlpplayer._suggest_playlist_filename(episodes),
+            "My- Show - Episode 1 - 2 episodes.m3u8",
+        )
+        self.assertEqual(
+            dlpplayer._suggest_playlist_filename(episodes, Path("favorites.m3u")),
+            "favorites.m3u8",
+        )
+        self.assertEqual(
+            dlpplayer._suggest_playlist_filename(episodes, Path("playlist.m3u")),
+            "My- Show - Episode 1 - 2 episodes.m3u8",
+        )
+
     def test_builds_flat_playlist_command(self):
         url = "https://www.youtube.com/playlist?list=PL123"
         command = dlpplayer.build_playlist_command(

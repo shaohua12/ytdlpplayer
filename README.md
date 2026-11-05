@@ -25,6 +25,8 @@ files. Local video files open directly in mpv; multiple files play in order.
 M3U/M3U8 and supported URL playlists start at episode 1 and continue in order.
 The episode dropdown is shown when items can be enumerated. Selecting an episode
 switches the current MPV player to it and continues through the remaining list.
+Use **Save playlist** beside the episode selector to export the current list as an
+M3U/M3U8 file; drop that file into the app later to load it locally.
 A DLPPlayer-managed MPV process stays open after normal playback finishes. GUI and
 CLI playback reuse that per-user process for subsequent URLs, playlists, and local
 media. **Stop** stops normal playback but leaves MPV ready. An MPV started

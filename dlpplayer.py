@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 import zlib
 from collections.abc import Callable
@@ -363,6 +364,20 @@ def _send_mpv_ipc_command(server: str, command: list[object]) -> bool:
         return False
 
 
+def _send_mpv_ipc_command_retry(
+    server: str,
+    command: list[object],
+    attempts: int = 6,
+    retry_delay: float = 0.1,
+) -> bool:
+    for attempt in range(attempts):
+        if _send_mpv_ipc_command(server, command):
+            return True
+        if attempt + 1 < attempts:
+            time.sleep(retry_delay)
+    return False
+
+
 def _mpv_ipc_request(server: str, command: list[object]) -> dict[str, object] | None:
     request_id = uuid.uuid4().int & ((1 << 63) - 1)
     message = json.dumps(
@@ -415,6 +430,72 @@ def _open_mpv_media(media_file: Path, mpv_option: str | None = None) -> int:
             return 0
         raise
     return 0
+
+
+def _mpv_property_value(server: str, property_name: str) -> object | None:
+    response = _mpv_ipc_request(server, ["get_property", property_name])
+    if response is None or response.get("error") != "success":
+        return None
+    return response.get("data")
+
+
+def _mpv_seconds(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(seconds) or seconds < 0:
+        return None
+    return seconds
+
+
+def _format_mpv_time(value: object) -> str | None:
+    seconds = _mpv_seconds(value)
+    if seconds is None:
+        return None
+    total_seconds = int(seconds)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds_part = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds_part:02d}"
+    return f"{minutes}:{seconds_part:02d}"
+
+
+def _format_mpv_progress(
+    time_position: object, duration: object, paused: bool = False
+) -> str:
+    state = "Paused" if paused else "Playing"
+    position_text = _format_mpv_time(time_position)
+    if position_text is None:
+        return f"{state} | loading media..."
+
+    duration_text = _format_mpv_time(duration)
+    duration_seconds = _mpv_seconds(duration)
+    position_seconds = _mpv_seconds(time_position)
+    if duration_text is None or duration_seconds is None or duration_seconds == 0:
+        return f"{state} | {position_text}"
+
+    progress = round(min(position_seconds / duration_seconds, 1) * 100)
+    return f"{state} | {position_text} / {duration_text} ({progress}%)"
+
+
+def _mpv_status_text(server: str) -> str | None:
+    idle_active = _mpv_property_value(server, "idle-active")
+    if idle_active is True:
+        return "MPV is ready."
+    if idle_active is None:
+        # MPV can be starting or stopping while its IPC endpoint is available.
+        time_position = _mpv_property_value(server, "time-pos")
+        duration = _mpv_property_value(server, "duration")
+        if time_position is None and duration is None:
+            return None
+    else:
+        time_position = _mpv_property_value(server, "time-pos")
+        duration = _mpv_property_value(server, "duration")
+    paused = _mpv_property_value(server, "pause") is True
+    return _format_mpv_progress(time_position, duration, paused)
 
 
 def build_video_info_command(
@@ -539,6 +620,49 @@ def _write_mpv_playlist(
                 episode.target,
             )
         )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _suggest_playlist_filename(
+    episodes: tuple[PlaylistEpisode, ...], source_path: Path | None = None
+) -> str:
+    source_stem = source_path.stem if source_path is not None else ""
+    if source_stem.casefold() in {"playlist", "new playlist", "episodes", "list"}:
+        source_stem = ""
+    if source_stem:
+        name = source_stem
+    elif episodes:
+        first_title = " ".join(episodes[0].title.split()) or "Saved playlist"
+        count_suffix = f" - {len(episodes)} episodes" if len(episodes) > 1 else ""
+        name = f"{first_title}{count_suffix}"
+    else:
+        name = "Saved playlist"
+
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", name)
+    name = re.sub(r"\s+", " ", name).strip(" .")[:100].rstrip(" .")
+    if not name:
+        name = "Saved playlist"
+    if name.upper() in {"CON", "PRN", "AUX", "NUL"} or re.fullmatch(
+        r"(?:COM|LPT)[1-9]", name, re.IGNORECASE
+    ):
+        name = f"_{name}"
+    return f"{name}.m3u8"
+
+
+def _write_local_m3u_playlist(
+    path: Path, episodes: tuple[PlaylistEpisode, ...]
+) -> None:
+    if not episodes:
+        raise ValueError("Cannot save an empty playlist.")
+    lines = ["#EXTM3U"]
+    for episode in episodes:
+        if "\n" in episode.target or "\r" in episode.target:
+            raise ValueError("Playlist targets cannot contain line breaks.")
+        title = " ".join(episode.title.split()) or "Untitled"
+        duration = episode.duration_seconds
+        if duration is None or duration < 0:
+            duration = -1
+        lines.extend((f"#EXTINF:{duration},{title}", episode.target))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -1467,7 +1591,7 @@ def play(args: argparse.Namespace) -> int:
 def launch_gui(_args: argparse.Namespace | None = None) -> int:
     try:
         import tkinter as tk
-        from tkinter import messagebox, scrolledtext, ttk
+        from tkinter import filedialog, messagebox, scrolledtext, ttk
 
         from tkinterdnd2 import DND_ALL, TkinterDnD
     except ImportError as error:
@@ -1525,6 +1649,10 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         height=12,
     )
     episode_combo.pack(side="left", fill="x", expand=True)
+    save_playlist_button = ttk.Button(
+        episode_row, text="Save playlist", state="disabled"
+    )
+    save_playlist_button.pack(side="right", padx=(8, 0))
 
     info_frame = ttk.LabelFrame(frame, text="Video information", padding=8)
     video_title = tk.StringVar(value="")
@@ -1614,6 +1742,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         episode_combo.configure(values=())
         episode_combo.set("")
         episode_row.pack_forget()
+        save_playlist_button.configure(state="disabled")
         play_button.configure(state="normal")
         stop_button.configure(
             state="normal" if current_player is not None else "disabled"
@@ -1624,8 +1753,10 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         nonlocal playlist_episodes
         playlist_episodes = episodes
         if not episodes:
+            save_playlist_button.configure(state="disabled")
             status.set("No playable episodes were found in this playlist.")
             return
+        save_playlist_button.configure(state="normal")
         episode_combo.configure(
             values=tuple(
                 _playlist_episode_label(index, episode)
@@ -1636,6 +1767,36 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         episode_row.pack(after=url_row, fill="x", pady=(8, 0))
         fit_window_height()
         status.set(f"Found {len(episodes)} episodes. Playing from episode 1.")
+
+    def save_current_playlist() -> None:
+        if not playlist_episodes:
+            status.set("No playlist is loaded to save.")
+            return
+        initial_name = _suggest_playlist_filename(
+            playlist_episodes, loaded_playlist_path
+        )
+        options = {
+            "parent": root,
+            "title": "Save playlist",
+            "initialfile": initial_name,
+            "defaultextension": ".m3u8",
+            "filetypes": (("M3U playlists", "*.m3u8 *.m3u"), ("All files", "*.*")),
+        }
+        if loaded_playlist_path is not None:
+            options["initialdir"] = str(loaded_playlist_path.parent)
+        destination = filedialog.asksaveasfilename(**options)
+        if not destination:
+            return
+        playlist_path = Path(destination)
+        try:
+            _write_local_m3u_playlist(playlist_path, playlist_episodes)
+        except (OSError, ValueError) as error:
+            status.set(f"Could not save playlist: {error}")
+            messagebox.showerror("Could not save playlist", str(error), parent=root)
+            return
+        status.set(f"Saved {len(playlist_episodes)} episodes to {playlist_path}.")
+
+    save_playlist_button.configure(command=save_current_playlist)
 
     def request_episode_metadata(
         episodes: tuple[PlaylistEpisode, ...], request_id: int
@@ -1783,8 +1944,16 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             current_player_ipc_server is not None
             and (current_player is None or current_player.poll() is None)
         ):
-            stopped = _send_mpv_ipc_command(current_player_ipc_server, ["stop"])
+            stopped = _send_mpv_ipc_command_retry(
+                current_player_ipc_server, ["stop"]
+            )
         had_playback = had_playback or stopped
+        if not stopped and current_player is not None and current_player.poll() is None:
+            play_button.configure(state="normal")
+            stop_button.configure(state="normal")
+            set_playback_lamp(True, True)
+            status.set("Could not reach MPV; it was left open. Try Stop again.")
+            return
         if not stopped:
             stop_current_player()
         play_button.configure(state="normal")
@@ -1792,7 +1961,11 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         if had_playback:
             set_playback_lamp(current_player is not None or stopped, False)
             clear_video_info()
-            status.set("Playback stopped; MPV remains open." if stopped else "Playback stopped.")
+            status.set(
+                "Playback stopped; MPV remains open."
+                if stopped
+                else "Playback stopped."
+            )
             if stopped and current_player is None:
                 root.after(2000, check_player, None)
 
@@ -1815,19 +1988,15 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             return
         if player is None:
             ipc_server = current_player_ipc_server
-            response = (
-                _mpv_ipc_request(ipc_server, ["get_property", "idle-active"])
-                if ipc_server is not None
-                else None
+            playback_status = (
+                _mpv_status_text(ipc_server) if ipc_server is not None else None
             )
-            if response is not None and response.get("error") == "success":
-                idle = response.get("data") is True
+            if playback_status is not None:
+                idle = playback_status == "MPV is ready."
                 set_playback_lamp(True, not idle)
-                status.set(
-                    "MPV is ready."
-                    if idle
-                    else "MPV is running; check its window for stream status."
-                )
+                stop_button.configure(state="disabled" if idle else "normal")
+                play_button.configure(state="normal")
+                status.set(playback_status)
                 root.after(2000, check_player, None)
                 return
             current_player_ipc_server = None
@@ -1836,11 +2005,30 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             play_button.configure(state="normal")
             return
         if player.poll() is None:
-            set_playback_lamp(True, True)
-            if radio_mix_active:
-                status.set("YouTube radio mix is playing. Use Stop to end it.")
+            playback_status = (
+                _mpv_status_text(current_player_ipc_server)
+                if current_player_ipc_server is not None
+                else None
+            )
+            idle = playback_status == "MPV is ready."
+            set_playback_lamp(True, not idle)
+            stop_button.configure(
+                state="normal" if radio_mix_active else ("disabled" if idle else "normal")
+            )
+            play_button.configure(state="normal")
+            if radio_mix_active and idle:
+                status.set("Mix batch finished; loading the next batch...")
+                request_radio_mix_batch(radio_mix_next_start)
+            elif radio_mix_active:
+                status.set(
+                    f"YouTube radio mix | {playback_status}"
+                    if playback_status is not None
+                    else "YouTube radio mix is playing. Use Stop to end it."
+                )
             else:
-                status.set("mpv is running; check its window for stream status.")
+                status.set(
+                    playback_status or "MPV is running; waiting for playback status..."
+                )
             root.after(2000, check_player, player)
             return
 
@@ -1874,7 +2062,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         if (
             (current_player is None or current_player.poll() is None)
             and current_player_ipc_server is not None
-            and _send_mpv_ipc_command(
+            and _send_mpv_ipc_command_retry(
                 current_player_ipc_server, ["loadfile", url, "replace"]
             )
         ):
@@ -1888,6 +2076,10 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             if current_player is None:
                 root.after(2000, check_player, None)
             return True
+        if current_player is not None and current_player.poll() is None:
+            set_playback_lamp(True, True)
+            status.set("Could not reach the current MPV player; leaving it open.")
+            return False
         stop_current_player()
         status.set("URL validated. Starting mpv...")
         root.update_idletasks()
@@ -1948,12 +2140,11 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
 
         if (
             (current_player is None or current_player.poll() is None)
-            and not radio_mix_active
             and current_player_ipc_server is not None
         ):
             try:
                 _write_mpv_playlist(playlist_manifest_path, episodes)
-                jumped = _send_mpv_ipc_command(
+                jumped = _send_mpv_ipc_command_retry(
                     current_player_ipc_server,
                     ["loadlist", str(playlist_manifest_path), "replace"],
                 )
@@ -1977,6 +2168,10 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 )
                 return
 
+        if current_player is not None and current_player.poll() is None:
+            set_playback_lamp(True, True)
+            status.set("Could not switch episodes; the current MPV player was left open.")
+            return
         stop_current_player()
         playlist_playing_url = None
         set_playback_lamp(False)
@@ -2004,7 +2199,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                     node_runtime,
                     playlist_file=str(playlist_manifest_path),
                     ipc_server=ipc_server,
-                    keep_open=not radio_mix_active,
+                    keep_open=True,
                 )
             else:
                 command = [
@@ -2038,10 +2233,16 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         root.after(2000, check_player, player)
 
     def play_selected_episode(display_url: str) -> None:
+        nonlocal radio_mix_request, radio_mix_url, radio_mix_loading, radio_mix_active
         episode_index = episode_combo.current()
         if not 0 <= episode_index < len(playlist_episodes):
             status.set("Choose an episode from the list.")
             return
+        if radio_mix_active:
+            radio_mix_request += 1
+            radio_mix_url = None
+            radio_mix_loading = False
+            radio_mix_active = False
         start_playlist_playback(display_url, episode_index)
 
     def on_episode_selected(_event: object) -> None:
@@ -2336,7 +2537,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         ):
             try:
                 _write_mpv_playlist(playlist_manifest_path, local_episodes)
-                reused = _send_mpv_ipc_command(
+                reused = _send_mpv_ipc_command_retry(
                     current_player_ipc_server,
                     ["loadlist", str(playlist_manifest_path), "replace"],
                 )
@@ -2355,6 +2556,10 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 if current_player is None:
                     root.after(2000, check_player, None)
                 return
+        if current_player is not None and current_player.poll() is None:
+            set_playback_lamp(True, True)
+            status.set("Could not reach the current MPV player; leaving it open.")
+            return
         stop_current_player()
         try:
             mpv = resolve_tool(None, "DLPPLAYER_MPV", MPV_DEFAULT, "mpv")
