@@ -28,7 +28,8 @@ YTDLP_DEFAULT = Path(r"D:\bin\yt-dlp\yt-dlp.exe")
 MPV_DEFAULT = Path(r"D:\bin\mpv\mpv.exe")
 FFMPEG_DEFAULT = Path(r"D:\bin\ffmpeg\bin")
 NODE_DEFAULT = Path(r"D:\bin\nodejs\node.exe")
-VIDEO_FORMAT_DEFAULT = "bv*[height<=1080]+ba/b[height<=1080]"
+DEFAULT_MAX_ALLOWED_RESOLUTION = 1080
+SETTINGS_PATH = Path(__file__).resolve().with_name("dlpplayer.json")
 RADIO_MIX_BATCH_SIZE = 10
 
 
@@ -40,6 +41,58 @@ BILIBILI_VIDEO_METADATA_TIMEOUT = 10
 HLS_METADATA_TIMEOUT = 10
 IDLE_WINDOW_MIN_HEIGHT = 150
 OUTPUT_DEFAULT = Path(__file__).resolve().parent
+
+
+@dataclass(frozen=True)
+class AppSettings:
+    max_allowed_resolution: int | None = DEFAULT_MAX_ALLOWED_RESOLUTION
+
+    @property
+    def video_format(self) -> str:
+        if self.max_allowed_resolution is None:
+            return "bv*+ba/b"
+        return (
+            f"bv*[height<={self.max_allowed_resolution}]+ba/"
+            f"b[height<={self.max_allowed_resolution}]"
+        )
+
+
+def load_settings(settings_path: Path = SETTINGS_PATH) -> AppSettings:
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return AppSettings()
+    except (OSError, json.JSONDecodeError) as error:
+        print(
+            f"Warning: could not read {settings_path}: {error}. Using default settings.",
+            file=sys.stderr,
+        )
+        return AppSettings()
+
+    if not isinstance(data, dict):
+        print(
+            f"Warning: {settings_path} must contain a JSON object. Using default settings.",
+            file=sys.stderr,
+        )
+        return AppSettings()
+
+    max_resolution = data.get(
+        "max_allowed_resolution", DEFAULT_MAX_ALLOWED_RESOLUTION
+    )
+    if max_resolution is not None and (
+        type(max_resolution) is not int or max_resolution <= 0
+    ):
+        print(
+            f"Warning: max_allowed_resolution in {settings_path} must be a positive integer or null. "
+            "Using the default setting.",
+            file=sys.stderr,
+        )
+        return AppSettings()
+    return AppSettings(max_allowed_resolution=max_resolution)
+
+
+SETTINGS = load_settings()
+VIDEO_FORMAT_DEFAULT = SETTINGS.video_format
 
 
 URL_PATTERN = re.compile(r"https?://[^\s{}<>\"']+", re.IGNORECASE)
@@ -2424,7 +2477,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--format",
         dest="video_format",
         default=VIDEO_FORMAT_DEFAULT,
-        help="yt-dlp format selector (default: best video up to 1080p plus audio)",
+        help="yt-dlp format selector (default: configured maximum resolution plus audio)",
     )
     download_parser.set_defaults(handler=download)
 

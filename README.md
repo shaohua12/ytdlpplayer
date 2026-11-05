@@ -98,6 +98,12 @@ Download options:
   `--ffmpeg` may be an executable or its containing directory.
 - `--node PATH`: Node.js executable for YouTube JavaScript challenge support.
 
+DLPPlayer reads `dlpplayer.json` beside `dlpplayer.py` at startup. The default
+file sets `max_allowed_resolution` to `1080`; change it to another positive
+height (for example `720`) to cap yt-dlp selections for playback and downloads.
+Set it to `null` to remove the height cap. The download `-f` option still
+provides a per-command override.
+
 The default tool locations are `D:\bin\yt-dlp\yt-dlp.exe`,
 `D:\bin\ffmpeg\bin`, `D:\bin\mpv\mpv.exe`, and
 `D:\bin\nodejs\node.exe` (YouTube). Set `DLPPLAYER_YTDLP`,

@@ -18,9 +18,53 @@ from dlpplayer import (
     extract_local_paths,
     format_video_info,
     is_http_url,
+    load_settings,
     video_info_from_ffprobe,
     video_info_from_ytdlp,
 )
+
+
+class SettingsTests(unittest.TestCase):
+    def test_reads_maximum_resolution_from_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = Path(temp_dir) / "dlpplayer.json"
+            settings_path.write_text(
+                '{"max_allowed_resolution": 720}', encoding="utf-8"
+            )
+
+            settings = load_settings(settings_path)
+
+        self.assertEqual(settings.max_allowed_resolution, 720)
+        self.assertEqual(
+            settings.video_format,
+            "bv*[height<=720]+ba/b[height<=720]",
+        )
+
+    def test_null_resolution_allows_any_available_height(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = Path(temp_dir) / "dlpplayer.json"
+            settings_path.write_text(
+                '{"max_allowed_resolution": null}', encoding="utf-8"
+            )
+
+            settings = load_settings(settings_path)
+
+        self.assertIsNone(settings.max_allowed_resolution)
+        self.assertEqual(settings.video_format, "bv*+ba/b")
+
+    def test_invalid_resolution_falls_back_to_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = Path(temp_dir) / "dlpplayer.json"
+            settings_path.write_text(
+                '{"max_allowed_resolution": true}', encoding="utf-8"
+            )
+
+            with patch("sys.stderr"):
+                settings = load_settings(settings_path)
+
+        self.assertEqual(settings.max_allowed_resolution, 1080)
+        self.assertEqual(settings.video_format, VIDEO_FORMAT_DEFAULT)
+
 
 class HttpUrlTests(unittest.TestCase):
 
