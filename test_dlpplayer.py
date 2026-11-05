@@ -19,28 +19,27 @@ from dlpplayer import (
     extract_local_paths,
     format_video_info,
     is_http_url,
-    is_supported_url,
     video_info_from_ffprobe,
     video_info_from_ytdlp,
 )
 
-class BilibiliUrlTests(unittest.TestCase):
+class HttpUrlTests(unittest.TestCase):
 
     def test_accepts_bilibili_video_and_short_links(self):
-        self.assertTrue(is_supported_url("https://www.bilibili.com/video/BV123"))
-        self.assertTrue(is_supported_url("https://b23.tv/abc"))
-        self.assertTrue(is_supported_url("https://www.bilibili.tv/video/123"))
+        self.assertTrue(is_http_url("https://www.bilibili.com/video/BV123"))
+        self.assertTrue(is_http_url("https://b23.tv/abc"))
+        self.assertTrue(is_http_url("https://www.bilibili.tv/video/123"))
 
     def test_accepts_youtube_video_and_short_links(self):
-        self.assertTrue(is_supported_url("https://www.youtube.com/watch?v=BaW_jenozKc"))
-        self.assertTrue(is_supported_url("https://youtu.be/BaW_jenozKc"))
-        self.assertTrue(is_supported_url("https://music.youtube.com/watch?v=BaW_jenozKc"))
+        self.assertTrue(is_http_url("https://www.youtube.com/watch?v=BaW_jenozKc"))
+        self.assertTrue(is_http_url("https://youtu.be/BaW_jenozKc"))
+        self.assertTrue(is_http_url("https://music.youtube.com/watch?v=BaW_jenozKc"))
 
-    def test_rejects_other_hosts_and_malformed_urls(self):
-        self.assertFalse(is_supported_url("https://bilibili.com.attacker.example/video/1"))
-        self.assertFalse(is_supported_url("https://youtube.com.attacker.example/watch?v=x"))
-        self.assertFalse(is_supported_url("file:///tmp/video.mp4"))
-        self.assertFalse(is_supported_url("not a url"))
+    def test_accepts_other_sites_and_rejects_non_http_urls(self):
+        self.assertTrue(is_http_url("https://media.example/watch?id=123"))
+        self.assertTrue(is_http_url("https://vimeo.com/123456789"))
+        self.assertFalse(is_http_url("file:///tmp/video.mp4"))
+        self.assertFalse(is_http_url("not a url"))
 
     def test_extracts_any_http_url_from_drag_payload(self):
         url = "https://www.bilibili.com/video/BV123"
@@ -159,7 +158,7 @@ class DownloadCommandTests(unittest.TestCase):
                 return SimpleNamespace(returncode=0)
 
             args = argparse.Namespace(
-                url="https://www.bilibili.com/video/BV123",
+                url="https://media.example/watch?id=123",
                 yt_dlp=str(yt_dlp),
                 ffmpeg=str(ffmpeg),
                 mpv=str(mpv),
@@ -173,6 +172,10 @@ class DownloadCommandTests(unittest.TestCase):
                 self.assertEqual(dlpplayer.download(args), 0)
 
             self.assertEqual(run.call_count, 2)
+            self.assertEqual(
+                run.call_args_list[0].args[0][-1],
+                "https://media.example/watch?id=123",
+            )
             self.assertTrue(downloaded_file.is_file())
 
 
@@ -295,6 +298,21 @@ class VideoInfoCommandTests(unittest.TestCase):
             command.index("--write-comments"), command.index("--no-write-comments")
         )
 
+    def test_generic_video_info_skips_bilibili_comment_api(self):
+        result = SimpleNamespace(
+            returncode=0,
+            stdout='{"title":"Site video","vcodec":"h264"}',
+            stderr="",
+        )
+        with patch.object(dlpplayer.subprocess, "run", return_value=result):
+            with patch.object(dlpplayer, "_fetch_bilibili_comments") as fetch_comments:
+                info = dlpplayer.fetch_url_video_info(
+                    "yt-dlp.exe", "https://media.example/watch?id=123"
+                )
+
+        self.assertEqual(info.title, "Site video")
+        fetch_comments.assert_not_called()
+
 
 class PlaylistEpisodeTests(unittest.TestCase):
     def test_builds_flat_playlist_command(self):
@@ -345,7 +363,7 @@ class PlaylistEpisodeTests(unittest.TestCase):
 
         self.assertIn("--skip-download", command)
         self.assertIn("--no-playlist", command)
-        self.assertEqual(command[-1], url)
+        self.assertIn("--cookies-from-browser", command)
 
     def test_fetches_episode_titles_and_playable_urls(self):
         playlist_url = "https://www.youtube.com/playlist?list=PL123"
@@ -369,6 +387,30 @@ class PlaylistEpisodeTests(unittest.TestCase):
                 ),
                 dlpplayer.PlaylistEpisode(
                     "Second episode", "https://youtu.be/second", 62
+                ),
+            ),
+        )
+
+    def test_fetches_generic_site_playlist_urls_without_fabricating_site_urls(self):
+        result = SimpleNamespace(
+            returncode=0,
+            stdout=(
+                '{"entries":[{"webpage_url":"https://media.example/watch/first",'
+                '"id":"first","title":"First episode"},'
+                '{"id":"unavailable","title":"Unavailable"}]}'
+            ),
+            stderr="",
+        )
+        with patch.object(dlpplayer.subprocess, "run", return_value=result):
+            episodes = dlpplayer.fetch_playlist_episodes(
+                "yt-dlp.exe", "https://media.example/playlist/1"
+            )
+
+        self.assertEqual(
+            episodes,
+            (
+                dlpplayer.PlaylistEpisode(
+                    "First episode", "https://media.example/watch/first"
                 ),
             ),
         )

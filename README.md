@@ -1,7 +1,7 @@
-# DLPPlayer — Bilibili and YouTube downloader for Windows
+# DLPPlayer — yt-dlp video downloader for Windows
 
-A small Python app that uses the installed `yt-dlp` extractor and `ffmpeg` to
-download Bilibili or YouTube videos and open video links in mpv.
+A small Python app that uses yt-dlp and ffmpeg to download videos from sites
+supported by yt-dlp and open video links in mpv.
 Its drag-and-drop window uses the `tkinterdnd2` package.
 
 Install the GUI dependency once:
@@ -64,10 +64,11 @@ python .\dlpplayer.py download <URL> [options]
 python .\dlpplayer.py play <FILE> [--mpv PATH]
 ```
 
-`download` accepts one Bilibili or YouTube video URL. It downloads into the
-directory containing `dlpplayer.py` by default, names the file using its title
+`download` accepts one HTTP(S) video URL supported by yt-dlp. It downloads into
+the directory containing `dlpplayer.py` by default, names the file using its title
 and video ID, and merges the output into MP4. Use `--play` to open the completed
-download in mpv. `-o`/`--output-dir` selects another download directory.
+download in mpv. `-o`/`--output-dir` selects another download directory. The
+download command handles one video at a time; use the GUI for playlists.
 
 ```powershell
 python .\dlpplayer.py download "https://www.bilibili.com/video/BV..." --play

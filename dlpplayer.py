@@ -1,4 +1,4 @@
-"""Download Youtube/Bilibili videos with yt-dlp and optionally play them with mpv."""
+"""Download videos from yt-dlp-supported sites and optionally play them with mpv."""
 
 from __future__ import annotations
 
@@ -43,29 +43,19 @@ OUTPUT_DEFAULT = Path(__file__).resolve().parent
 URL_PATTERN = re.compile(r"https?://[^\s{}<>\"']+", re.IGNORECASE)
 
 
-def is_supported_url(url: str) -> bool:
+def is_bilibili_url(url: str) -> bool:
     if not is_http_url(url):
         return False
     try:
-        parsed = urlsplit(url)
-        host = (parsed.hostname or "").lower().rstrip(".")
+        host = (urlsplit(url).hostname or "").lower().rstrip(".")
     except ValueError:
         return False
-
-    bilibili_host = (
+    return (
         host == "bilibili.com"
         or host.endswith(".bilibili.com")
         or host in {"b23.tv", "bilibili.tv"}
         or host.endswith(".bilibili.tv")
     )
-    youtube_host = (
-        host == "youtu.be"
-        or host == "youtube.com"
-        or host.endswith(".youtube.com")
-        or host == "youtube-nocookie.com"
-        or host.endswith(".youtube-nocookie.com")
-    )
-    return bilibili_host or youtube_host
 
 
 def is_http_url(url: str) -> bool:
@@ -352,7 +342,7 @@ def build_episode_metadata_command(
         "--no-write-comments",
         "--no-playlist",
     ]
-    if is_supported_url(url):
+    if is_http_url(url):
         command.extend(["--cookies-from-browser", "firefox"])
     if is_youtube_url(url):
         runtime = f"node:{node_runtime}" if node_runtime else "node"
@@ -1031,7 +1021,7 @@ def fetch_url_video_info(
         metadata = video_entry
     if not isinstance(metadata, dict):
         raise ValueError("yt-dlp returned invalid video information.")
-    if is_supported_url(url) and not is_youtube_url(url):
+    if is_bilibili_url(url):
         metadata["comments"] = _fetch_bilibili_comments(url, metadata)
     return video_info_from_ytdlp(metadata)
 
@@ -1077,7 +1067,7 @@ def _fetch_playlist_episodes(
                 episode_url = (
                     f"https://www.youtube.com/watch?{urlencode({'v': identifier})}"
                 )
-            elif is_supported_url(url):
+            elif is_bilibili_url(url):
                 video_id = identifier
                 if video_id.isdecimal():
                     video_id = f"av{video_id}"
@@ -1255,8 +1245,8 @@ def fetch_local_video_info(ffprobe: str, media_file: Path) -> VideoInfo:
 
 
 def download(args: argparse.Namespace) -> int:
-    if not is_supported_url(args.url):
-        print("Error: URL must be from Bilibili or YouTube.", file=sys.stderr)
+    if not is_http_url(args.url):
+        print("Error: URL must use HTTP or HTTPS.", file=sys.stderr)
         return 2
 
     try:
@@ -2149,8 +2139,10 @@ def create_parser() -> argparse.ArgumentParser:
     gui_parser = commands.add_parser("gui", help="Open the drag-and-drop player window.")
     gui_parser.set_defaults(handler=launch_gui)
 
-    download_parser = commands.add_parser("download", help="Download one Bilibili or YouTube video.")
-    download_parser.add_argument("url", help="Bilibili or YouTube video URL")
+    download_parser = commands.add_parser(
+        "download", help="Download one video URL supported by yt-dlp."
+    )
+    download_parser.add_argument("url", help="HTTP(S) video URL supported by yt-dlp")
     download_parser.add_argument(
         "-o", "--output-dir", type=Path, default=OUTPUT_DEFAULT, help="download folder"
     )
