@@ -117,6 +117,11 @@ the JSON settings. The default paths are `D:\bin\yt-dlp\yt-dlp.exe`,
 packages such as `tkinterdnd2`. It may also be relative to `dlpplayer.json`; leave
 it `null` to use the current Python environment.
 
+`radio_mix_batch_size` controls how many YouTube radio-mix (`RD...`) episodes are
+loaded at a time; it defaults to `68`. Raise it to show more of the mix in the
+episode list, or lower it to start playback sooner. The episode dropdown grows
+with the list and shows up to 30 rows at once.
+
 Firefox cookies are passed directly to yt-dlp; this project does not export,
 copy, or store the cookie database. Keep the Firefox profile private and do not
 share it.

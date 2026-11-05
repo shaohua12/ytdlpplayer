@@ -98,6 +98,28 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(resolved, "mpv.exe")
         which.assert_called_once_with("mpv")
 
+    def test_radio_mix_batch_size_defaults_and_validates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = Path(temp_dir) / "dlpplayer.json"
+            self.assertEqual(
+                load_settings(settings_path).radio_mix_batch_size, 68
+            )
+
+            settings_path.write_text(
+                '{"radio_mix_batch_size": 25}', encoding="utf-8"
+            )
+            self.assertEqual(
+                load_settings(settings_path).radio_mix_batch_size, 25
+            )
+
+            settings_path.write_text(
+                '{"radio_mix_batch_size": 0}', encoding="utf-8"
+            )
+            with patch("sys.stderr"):
+                self.assertEqual(
+                    load_settings(settings_path).radio_mix_batch_size, 68
+                )
+
 
 class HttpUrlTests(unittest.TestCase):
 
@@ -564,6 +586,12 @@ class VideoInfoCommandTests(unittest.TestCase):
 
 
 class PlaylistEpisodeTests(unittest.TestCase):
+    def test_episode_dropdown_shows_up_to_thirty_rows(self):
+        self.assertEqual(dlpplayer._episode_dropdown_height(1), 1)
+        self.assertEqual(dlpplayer._episode_dropdown_height(12), 12)
+        self.assertEqual(dlpplayer._episode_dropdown_height(68), 30)
+        self.assertEqual(dlpplayer._episode_dropdown_height(0), 1)
+
     def test_maps_mpv_playlist_position_to_episode(self):
         episodes = (
             dlpplayer.PlaylistEpisode("First", "https://media.example/1"),

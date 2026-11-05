@@ -31,7 +31,7 @@ FFMPEG_DEFAULT = Path(r"D:\bin\ffmpeg\bin")
 NODE_DEFAULT = Path(r"D:\bin\nodejs\node.exe")
 DEFAULT_MAX_ALLOWED_RESOLUTION = 1080
 SETTINGS_PATH = Path(__file__).resolve().with_name("dlpplayer.json")
-RADIO_MIX_BATCH_SIZE = 10
+DEFAULT_RADIO_MIX_BATCH_SIZE = 68
 
 
 YOUTUBE_COMMENT_FETCH_LIMIT = 100
@@ -41,6 +41,7 @@ BILIBILI_COMMENT_TIMEOUT = 5
 BILIBILI_VIDEO_METADATA_TIMEOUT = 10
 HLS_METADATA_TIMEOUT = 10
 IDLE_WINDOW_MIN_HEIGHT = 150
+EPISODE_DROPDOWN_MAX_ROWS = 30
 OUTPUT_DEFAULT = Path(__file__).resolve().parent
 
 
@@ -52,6 +53,7 @@ class AppSettings:
     ffmpeg_path: Path | None = FFMPEG_DEFAULT
     node_path: Path | None = NODE_DEFAULT
     python_library_path: Path | None = None
+    radio_mix_batch_size: int = DEFAULT_RADIO_MIX_BATCH_SIZE
 
     @property
     def video_format(self) -> str:
@@ -119,8 +121,20 @@ def load_settings(settings_path: Path = SETTINGS_PATH) -> AppSettings:
         )
         max_resolution = DEFAULT_MAX_ALLOWED_RESOLUTION
 
+    radio_mix_batch_size = data.get(
+        "radio_mix_batch_size", DEFAULT_RADIO_MIX_BATCH_SIZE
+    )
+    if type(radio_mix_batch_size) is not int or radio_mix_batch_size <= 0:
+        print(
+            f"Warning: radio_mix_batch_size in {settings_path} must be a positive integer. "
+            "Using the default setting.",
+            file=sys.stderr,
+        )
+        radio_mix_batch_size = DEFAULT_RADIO_MIX_BATCH_SIZE
+
     return AppSettings(
         max_allowed_resolution=max_resolution,
+        radio_mix_batch_size=radio_mix_batch_size,
         yt_dlp_path=_settings_path_value(data, "yt_dlp_path", YTDLP_DEFAULT, settings_path),
         mpv_path=_settings_path_value(data, "mpv_path", MPV_DEFAULT, settings_path),
         ffmpeg_path=_settings_path_value(data, "ffmpeg_path", FFMPEG_DEFAULT, settings_path),
@@ -150,6 +164,7 @@ YTDLP_DEFAULT = SETTINGS.yt_dlp_path
 MPV_DEFAULT = SETTINGS.mpv_path
 FFMPEG_DEFAULT = SETTINGS.ffmpeg_path
 NODE_DEFAULT = SETTINGS.node_path
+RADIO_MIX_BATCH_SIZE = SETTINGS.radio_mix_batch_size
 VIDEO_FORMAT_DEFAULT = SETTINGS.video_format
 _add_python_library_path(SETTINGS.python_library_path)
 
@@ -841,6 +856,12 @@ def _playlist_episode_label(index: int, episode: PlaylistEpisode) -> str:
     label = f"{index}. {episode.title}"
     duration = _format_duration(episode.duration_seconds)
     return f"{label}  {duration}" if duration else label
+
+
+def _episode_dropdown_height(episode_count: int) -> int:
+    if episode_count <= 0:
+        return 1
+    return min(episode_count, EPISODE_DROPDOWN_MAX_ROWS)
 
 
 def _bilibili_ugc_season_episodes(
@@ -1937,10 +1958,11 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             return
         save_playlist_button.configure(state="normal")
         episode_combo.configure(
+            height=_episode_dropdown_height(len(episodes)),
             values=tuple(
                 _playlist_episode_label(index, episode)
                 for index, episode in enumerate(episodes, start=1)
-            )
+            ),
         )
         episode_combo.current(0)
         episode_row.pack(after=url_row, fill="x", pady=(8, 0))
