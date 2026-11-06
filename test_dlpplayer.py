@@ -547,6 +547,30 @@ class MpvUrlCommandTests(unittest.TestCase):
         )
 
 
+class VideoInfoErrorMessageTests(unittest.TestCase):
+    def test_explains_youtube_members_only_access(self):
+        message = dlpplayer._video_info_error_message(
+            "https://www.youtube.com/watch?v=-7Le2prbpH8",
+            "ERROR: [youtube] -7Le2prbpH8: Join this channel to get access to "
+            "members-only content like this video, and other exclusive perks.",
+        )
+
+        self.assertEqual(
+            message,
+            "YouTube reports this video is members-only. Check that the Firefox "
+            "profile used by DLPPlayer is signed in to an account that has joined "
+            "the channel.",
+        )
+
+    def test_preserves_other_video_metadata_errors(self):
+        self.assertEqual(
+            dlpplayer._video_info_error_message(
+                "https://media.example/video", "network unavailable"
+            ),
+            "Video details unavailable: network unavailable",
+        )
+
+
 class VideoInfoCommandTests(unittest.TestCase):
     def test_requests_bounded_top_comments(self):
         command = build_video_info_command(

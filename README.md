@@ -60,6 +60,8 @@ uploader, date, counts, categories, tags, and a short description. Local files
 show available format, codec, frame rate, and size details. For multiple local
 files, it describes the first file; URL metadata comes from yt-dlp and local
 metadata from ffprobe.
+When video details cannot be read, the information panel shows the error. YouTube
+members-only errors explain the Firefox account requirement.
 
 ## Command-line usage
 

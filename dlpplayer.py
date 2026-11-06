@@ -266,6 +266,23 @@ def _youtube_video_url(url: str) -> str | None:
     )
 
 
+def _video_info_error_message(url: str | None, error: object) -> str:
+    message = str(error).strip()
+    if (
+        url is not None
+        and is_youtube_url(url)
+        and "members-only content" in message.casefold()
+    ):
+        return (
+            "YouTube reports this video is members-only. Check that the Firefox "
+            "profile used by DLPPlayer is signed in to an account that has joined "
+            "the channel."
+        )
+    if not message:
+        return "Video details unavailable."
+    return f"Video details unavailable: {message}"
+
+
 
 def extract_http_url(text: str) -> str | None:
     for match in URL_PATTERN.finditer(text):
@@ -1857,18 +1874,27 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     info_frame = ttk.LabelFrame(frame, text="Video information", padding=8)
     video_title = tk.StringVar(value="")
     video_details = tk.StringVar(value="")
-    ttk.Label(
+    video_issue = tk.StringVar(value="")
+    video_title_label = ttk.Label(
         info_frame,
         textvariable=video_title,
         font=("Segoe UI", 16, "bold"),
         wraplength=520,
-    ).pack(anchor="w", pady=(0, 6))
-    ttk.Label(
+    )
+    video_title_label.pack(anchor="w", pady=(0, 6))
+    video_details_label = ttk.Label(
         info_frame,
         textvariable=video_details,
         wraplength=520,
         justify="left",
-    ).pack(fill="x", pady=(6, 0))
+    )
+    video_details_label.pack(fill="x", pady=(6, 0))
+    video_issue_label = ttk.Label(
+        info_frame,
+        textvariable=video_issue,
+        wraplength=520,
+        justify="left",
+    )
     comments_frame = ttk.LabelFrame(info_frame, text="Most liked comments", padding=4)
     comments_text = scrolledtext.ScrolledText(
         comments_frame,
@@ -1878,7 +1904,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         state="disabled",
     )
     comments_text.pack(fill="both", expand=True)
-    metadata_results: queue.Queue[tuple[int, VideoInfo | None]] = queue.Queue()
+    metadata_results: queue.Queue[
+        tuple[int, VideoInfo | None, str | None]
+    ] = queue.Queue()
     metadata_request = 0
     playlist_results: queue.Queue[
         tuple[int, str, tuple[PlaylistEpisode, ...] | None, str | None]
@@ -2054,10 +2082,13 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         info_frame.pack_forget()
         video_title.set("")
         video_details.set("")
+        video_issue.set("")
         display_comments(())
         fit_window_height()
 
-    def request_video_info(loader: Callable[[], VideoInfo]) -> None:
+    def request_video_info(
+        loader: Callable[[], VideoInfo], url: str | None = None
+    ) -> None:
         nonlocal metadata_request
         metadata_request += 1
         request_id = metadata_request
@@ -2065,9 +2096,11 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         def load_video_info() -> None:
             try:
                 info = loader()
-            except Exception:
+                error_message = None
+            except Exception as error:
                 info = None
-            metadata_results.put((request_id, info))
+                error_message = _video_info_error_message(url, error)
+            metadata_results.put((request_id, info, error_message))
 
         threading.Thread(target=load_video_info, daemon=True).start()
 
@@ -2092,7 +2125,8 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             except FileNotFoundError:
                 return
             request_video_info(
-                lambda: fetch_url_video_info(yt_dlp, episode.target, node_runtime)
+                lambda: fetch_url_video_info(yt_dlp, episode.target, node_runtime),
+                episode.target,
             )
             return
 
@@ -2104,14 +2138,32 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     def poll_video_info() -> None:
         while True:
             try:
-                request_id, info = metadata_results.get_nowait()
+                request_id, info, error_message = metadata_results.get_nowait()
             except queue.Empty:
                 break
-            if request_id != metadata_request or info is None:
+            if request_id != metadata_request:
                 continue
-            video_title.set(info.title)
-            video_details.set("\n".join(info.details))
-            display_comments(info.comments)
+            if info is None:
+                if error_message is None:
+                    continue
+                video_title.set("")
+                video_details.set("")
+                video_title_label.pack_forget()
+                video_details_label.pack_forget()
+                video_issue.set(error_message)
+                if not video_issue_label.winfo_manager():
+                    video_issue_label.pack(fill="x", pady=(6, 0))
+                display_comments(())
+            else:
+                video_title.set(info.title)
+                video_details.set("\n".join(info.details))
+                video_issue.set("")
+                video_issue_label.pack_forget()
+                if not video_title_label.winfo_manager():
+                    video_title_label.pack(anchor="w", pady=(0, 6))
+                if not video_details_label.winfo_manager():
+                    video_details_label.pack(fill="x", pady=(6, 0))
+                display_comments(info.comments)
             info_frame.pack(before=status_row, fill="x", pady=(10, 0))
             fit_window_height()
         root.after(100, poll_video_info)
@@ -2361,7 +2413,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 (PlaylistEpisode("Video", url),), request_info=False
             )
             request_video_info(
-                lambda: fetch_url_video_info(yt_dlp, url, node_runtime)
+                lambda: fetch_url_video_info(yt_dlp, url, node_runtime), url
             )
         else:
             track_active_playlist((), request_info=False)
