@@ -97,12 +97,15 @@ Download options:
   video up to 1080p plus audio.
 - `--play`: send the downloaded file to the shared MPV session after download
   succeeds.
-- `--firefox-profile NAME_OR_PATH`: use the selected Firefox profile. By
-  default yt-dlp reads cookies from Firefox's default profile.
-- `--no-cookies`: do not read Firefox cookies.
+- `--firefox-profile NAME_OR_PATH`: use this Firefox profile for the first
+  cookie attempt; default profile otherwise.
+- `--no-cookies`: do not read browser cookies.
 - `--yt-dlp PATH`, `--ffmpeg PATH`, `--mpv PATH`: override tool locations;
   `--ffmpeg` may be an executable or its containing directory.
 - `--node PATH`: Node.js executable for YouTube JavaScript challenge support.
+
+Direct yt-dlp requests retry cookie sources in Firefox, Chrome, then Edge order.
+MPV's embedded yt-dlp hook still uses Firefox.
 
 DLPPlayer reads `dlpplayer.json` beside `dlpplayer.py` at startup. The file
 sets `max_allowed_resolution` to `1080` by default; change it to another positive
@@ -126,9 +129,9 @@ loaded at a time; it defaults to `68`. Raise it to show more of the mix in the
 episode list, or lower it to start playback sooner. The episode dropdown grows
 with the list and shows up to 30 rows at once.
 
-Firefox cookies are passed directly to yt-dlp; this project does not export,
-copy, or store the cookie database. Keep the Firefox profile private and do not
-share it.
+For direct yt-dlp calls, Firefox, Chrome, and Edge cookies are passed directly to
+yt-dlp; this project does not export, copy, or store cookie databases. Keep
+browser profiles private and do not share them.
 
 Only download videos you own or are authorized to save.
 

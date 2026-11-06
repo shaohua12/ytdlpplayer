@@ -36,6 +36,7 @@ DEFAULT_RADIO_MIX_BATCH_SIZE = 68
 
 YOUTUBE_COMMENT_FETCH_LIMIT = 100
 YOUTUBE_COMMENT_FETCH_TIMEOUT = 120
+YTDLP_COOKIE_BROWSER_ORDER = ("firefox", "chrome", "edge")
 VIDEO_COMMENT_DISPLAY_LIMIT = 100
 BILIBILI_COMMENT_PAGE_SIZE = 20
 BILIBILI_COMMENT_TIMEOUT = 5
@@ -703,6 +704,33 @@ def build_episode_metadata_command(
         command.extend(["--js-runtimes", runtime])
     command.append(url)
     return command
+
+
+def _run_ytdlp_with_browser_fallback(
+    command: list[str], **run_options: object
+) -> subprocess.CompletedProcess:
+    try:
+        cookie_index = command.index("--cookies-from-browser")
+    except ValueError:
+        return subprocess.run(command, **run_options)
+
+    requested_browser = command[cookie_index + 1]
+    browser_name = requested_browser.split("+", 1)[0].split(":", 1)[0].casefold()
+    browser_sources = [requested_browser]
+    browser_sources.extend(
+        browser
+        for browser in YTDLP_COOKIE_BROWSER_ORDER
+        if browser != browser_name
+    )
+    result = None
+    for browser in browser_sources:
+        attempt = command.copy()
+        attempt[cookie_index + 1] = browser
+        result = subprocess.run(attempt, **run_options)
+        if result.returncode == 0:
+            return result
+    assert result is not None
+    return result
 
 
 @dataclass(frozen=True)
@@ -1486,7 +1514,7 @@ def video_info_from_ffprobe(
 def fetch_url_video_info(
     yt_dlp: str, url: str, node_runtime: str | None = None
 ) -> VideoInfo:
-    result = subprocess.run(
+    result = _run_ytdlp_with_browser_fallback(
         build_video_info_command(yt_dlp, url, node_runtime),
         capture_output=True,
         check=False,
@@ -1517,7 +1545,7 @@ def fetch_url_video_info(
 def fetch_youtube_video_comments(
     yt_dlp: str, url: str, node_runtime: str | None = None
 ) -> tuple[VideoComment, ...]:
-    result = subprocess.run(
+    result = _run_ytdlp_with_browser_fallback(
         build_video_info_command(
             yt_dlp, url, node_runtime, include_comments=True
         ),
@@ -1575,7 +1603,7 @@ def _fetch_playlist_episodes(
     node_runtime: str | None = None,
     playlist_items: tuple[int, int] | None = None,
 ) -> tuple[PlaylistEpisode, ...] | None:
-    result = subprocess.run(
+    result = _run_ytdlp_with_browser_fallback(
         _build_playlist_command(yt_dlp, url, node_runtime, playlist_items),
         capture_output=True,
         check=False,
@@ -1707,7 +1735,7 @@ def fetch_episode_metadata(
         return PlaylistEpisode(episode.title, episode.target, hls_duration)
     if yt_dlp is None:
         return episode
-    result = subprocess.run(
+    result = _run_ytdlp_with_browser_fallback(
         build_episode_metadata_command(yt_dlp, episode.target, node_runtime),
         capture_output=True,
         check=False,
@@ -1831,7 +1859,7 @@ def download(args: argparse.Namespace) -> int:
                 args.video_format,
                 node_runtime,
             )
-            result = subprocess.run(command, check=False)
+            result = _run_ytdlp_with_browser_fallback(command, check=False)
             if result.returncode:
                 return result.returncode
 

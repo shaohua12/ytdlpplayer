@@ -254,6 +254,44 @@ class DownloadCommandTests(unittest.TestCase):
         self.assertEqual(command[command.index("-f") + 1], "bv*[height<=480]+ba/b")
 
 
+class YtDlpCookieFallbackTests(unittest.TestCase):
+    def test_retries_firefox_chrome_then_edge(self):
+        command = [
+            "yt-dlp.exe",
+            "--cookies-from-browser",
+            "firefox:default-release",
+            "https://www.youtube.com/watch?v=video",
+        ]
+        failure = SimpleNamespace(returncode=1)
+        success = SimpleNamespace(returncode=0)
+        with patch.object(
+            dlpplayer.subprocess,
+            "run",
+            side_effect=[failure, failure, success],
+        ) as run:
+            result = dlpplayer._run_ytdlp_with_browser_fallback(command)
+
+        attempted_sources = [
+            call.args[0][call.args[0].index("--cookies-from-browser") + 1]
+            for call in run.call_args_list
+        ]
+        self.assertIs(result, success)
+        self.assertEqual(
+            attempted_sources, ["firefox:default-release", "chrome", "edge"]
+        )
+
+    def test_does_not_fallback_when_cookies_are_disabled(self):
+        command = ["yt-dlp.exe", "--skip-download", "https://media.example/video"]
+        failure = SimpleNamespace(returncode=1)
+        with patch.object(dlpplayer.subprocess, "run", return_value=failure) as run:
+            result = dlpplayer._run_ytdlp_with_browser_fallback(
+                command, check=False
+            )
+
+        self.assertIs(result, failure)
+        run.assert_called_once_with(command, check=False)
+
+
 class MpvIpcServerTests(unittest.TestCase):
     def test_ipc_endpoint_is_stable_and_per_user(self):
         first_profile = Path("D:/profiles/first")
@@ -642,6 +680,29 @@ class VideoInfoCommandTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertIn("--write-comments", command)
         self.assertEqual(comments, (dlpplayer.VideoComment("Top", 8, None),))
+
+    def test_video_info_retries_with_chrome_cookies(self):
+        failure = SimpleNamespace(returncode=1, stderr="Firefox cookies unavailable")
+        success = SimpleNamespace(
+            returncode=0,
+            stdout='{"title":"Video","vcodec":"h264"}',
+            stderr="",
+        )
+        with patch.object(
+            dlpplayer.subprocess, "run", side_effect=[failure, success]
+        ) as run:
+            info = dlpplayer.fetch_url_video_info(
+                "yt-dlp.exe", "https://www.youtube.com/watch?v=video"
+            )
+
+        self.assertEqual(info.title, "Video")
+        self.assertEqual(
+            [
+                call.args[0][call.args[0].index("--cookies-from-browser") + 1]
+                for call in run.call_args_list
+            ],
+            ["firefox", "chrome"],
+        )
 
     def test_comment_timeout_does_not_invalidate_video_information(self):
         info = dlpplayer.VideoInfo("Video", ("1920 × 1080",))
