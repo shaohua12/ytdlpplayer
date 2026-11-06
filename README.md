@@ -4,6 +4,22 @@ A small Python app that uses yt-dlp and ffmpeg to download videos from sites
 supported by yt-dlp and open video links in mpv.
 Its drag-and-drop window uses the `tkinterdnd2` package.
 
+## External tools
+
+`mpv`, `yt-dlp`, and FFmpeg are separate executables; installing the Python
+requirements does not install them. Install all three for the full feature set:
+
+- **mpv** is required to play local files and URLs.
+- **yt-dlp** is required for URL playback, URL and playlist details, and downloads.
+  mpv also uses yt-dlp's hook to resolve supported video URLs.
+- **FFmpeg** is required for downloads, including merging separate audio/video
+  streams. Its companion `ffprobe` (usually included in FFmpeg builds) reads
+  local-file media details.
+
+Local-file playback needs only mpv. URL playback needs mpv and yt-dlp; downloads
+need yt-dlp and FFmpeg. DLPPlayer checks its configured tool locations and then
+`PATH`; see the tool-location settings below to configure paths.
+
 Install the GUI dependency once:
 
 ```powershell
