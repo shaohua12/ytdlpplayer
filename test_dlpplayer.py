@@ -1,4 +1,6 @@
+import queue
 import tempfile
+import threading
 import tkinter
 import unittest
 from io import BytesIO
@@ -572,16 +574,20 @@ class VideoInfoErrorMessageTests(unittest.TestCase):
 
 
 class VideoInfoCommandTests(unittest.TestCase):
-    def test_requests_bounded_top_comments(self):
+    def test_separates_video_info_from_bounded_top_comments(self):
+        url = "https://youtu.be/BaW_jenozKc"
         command = build_video_info_command(
-            "yt-dlp.exe",
-            "https://youtu.be/BaW_jenozKc",
-            node_runtime="node.exe",
+            "yt-dlp.exe", url, node_runtime="node.exe"
+        )
+        comments_command = build_video_info_command(
+            "yt-dlp.exe", url, node_runtime="node.exe", include_comments=True
         )
 
-        self.assertIn("--write-comments", command)
+        self.assertIn("--no-write-comments", command)
+        self.assertNotIn("--write-comments", command)
+        self.assertIn("--write-comments", comments_command)
         self.assertEqual(
-            command[command.index("--extractor-args") + 1],
+            comments_command[comments_command.index("--extractor-args") + 1],
             "youtube:comment_sort=top;max_comments=100",
         )
         bilibili_command = build_video_info_command(
@@ -589,9 +595,67 @@ class VideoInfoCommandTests(unittest.TestCase):
         )
         self.assertIn("--no-write-comments", bilibili_command)
         self.assertNotIn("--write-comments", bilibili_command)
-        self.assertGreater(
-            command.index("--write-comments"), command.index("--no-write-comments")
+
+    def test_queues_video_information_before_comments_finish(self):
+        info = dlpplayer.VideoInfo("Video", ("1920 × 1080",))
+        comments = (dlpplayer.VideoComment("Top comment", 12, "Author"),)
+        comments_started = threading.Event()
+        finish_comments = threading.Event()
+        results = queue.Queue()
+
+        def load_comments():
+            comments_started.set()
+            if not finish_comments.wait(2):
+                raise TimeoutError("comments still loading")
+            return comments
+
+        worker = threading.Thread(
+            target=dlpplayer._load_video_info,
+            args=(7, lambda: info, "https://youtu.be/video", load_comments, results),
         )
+        worker.start()
+        try:
+            self.assertEqual(results.get(timeout=1), (7, info, None))
+            self.assertTrue(comments_started.wait(1))
+        finally:
+            finish_comments.set()
+            worker.join(timeout=1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(
+            results.get(timeout=1),
+            (7, dlpplayer.VideoInfo(info.title, info.details, comments), None),
+        )
+
+    def test_fetches_youtube_comments_in_separate_command(self):
+        result = SimpleNamespace(
+            returncode=0,
+            stdout='{"title":"Video","comments":[{"text":"Top",'
+            '"like_count":8}]}',
+            stderr="",
+        )
+        with patch.object(dlpplayer.subprocess, "run", return_value=result) as run:
+            comments = dlpplayer.fetch_youtube_video_comments(
+                "yt-dlp.exe", "https://youtu.be/video", "node.exe"
+            )
+
+        command = run.call_args.args[0]
+        self.assertIn("--write-comments", command)
+        self.assertEqual(comments, (dlpplayer.VideoComment("Top", 8, None),))
+
+    def test_comment_timeout_does_not_invalidate_video_information(self):
+        info = dlpplayer.VideoInfo("Video", ("1920 × 1080",))
+        results = queue.Queue()
+
+        def timeout_comments():
+            raise TimeoutError("comments exceeded their deadline")
+
+        dlpplayer._load_video_info(
+            8, lambda: info, "https://youtu.be/video", timeout_comments, results
+        )
+
+        self.assertEqual(results.get_nowait(), (8, info, None))
+        self.assertTrue(results.empty())
 
     def test_generic_video_info_skips_bilibili_comment_api(self):
         result = SimpleNamespace(

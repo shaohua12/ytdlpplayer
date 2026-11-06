@@ -52,7 +52,9 @@ The status bar shows a black play triangle while the mpv process runs and a soli
 black square after it stops.
 The panel shows up to 100 available URL comments in descending like-count
 order. Bilibili and YouTube retrieval are capped at 100; other sites are not
-forced to fetch comments. The comments box is omitted when none are available.
+forced to fetch comments. YouTube details appear before the separate comments
+fetch completes.
+The comments box is omitted when none are available.
 The window starts 20 pixels from the desktop's top and right edges, shrinks to a
 compact idle height, and grows to fit the panel during playback.
 URL details include resolution, duration, format, codecs, frame rate, size,

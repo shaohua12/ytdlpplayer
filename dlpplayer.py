@@ -35,6 +35,7 @@ DEFAULT_RADIO_MIX_BATCH_SIZE = 68
 
 
 YOUTUBE_COMMENT_FETCH_LIMIT = 100
+YOUTUBE_COMMENT_FETCH_TIMEOUT = 120
 VIDEO_COMMENT_DISPLAY_LIMIT = 100
 BILIBILI_COMMENT_PAGE_SIZE = 20
 BILIBILI_COMMENT_TIMEOUT = 5
@@ -620,6 +621,7 @@ def build_video_info_command(
     yt_dlp: str,
     url: str,
     node_runtime: str | None = None,
+    include_comments: bool = False,
 ) -> list[str]:
     command = [
         yt_dlp,
@@ -636,13 +638,15 @@ def build_video_info_command(
     ]
     if is_youtube_url(url):
         runtime = f"node:{node_runtime}" if node_runtime else "node"
-        command.extend(["--write-comments", "--js-runtimes", runtime])
-        command.extend(
-            [
-                "--extractor-args",
-                f"youtube:comment_sort=top;max_comments={YOUTUBE_COMMENT_FETCH_LIMIT}",
-            ]
-        )
+        command.extend(["--js-runtimes", runtime])
+        if include_comments:
+            command.append("--write-comments")
+            command.extend(
+                [
+                    "--extractor-args",
+                    f"youtube:comment_sort=top;max_comments={YOUTUBE_COMMENT_FETCH_LIMIT}",
+                ]
+            )
     command.append(url)
     return command
 
@@ -1510,6 +1514,61 @@ def fetch_url_video_info(
     return video_info_from_ytdlp(metadata)
 
 
+def fetch_youtube_video_comments(
+    yt_dlp: str, url: str, node_runtime: str | None = None
+) -> tuple[VideoComment, ...]:
+    result = subprocess.run(
+        build_video_info_command(
+            yt_dlp, url, node_runtime, include_comments=True
+        ),
+        capture_output=True,
+        check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=YOUTUBE_COMMENT_FETCH_TIMEOUT,
+    )
+    if result.returncode:
+        raise RuntimeError(
+            result.stderr.strip() or "yt-dlp could not read video comments."
+        )
+    metadata = json.loads(result.stdout)
+    entries = metadata.get("entries") if isinstance(metadata, dict) else None
+    if isinstance(entries, list):
+        metadata = next(
+            (entry for entry in entries if isinstance(entry, dict)), {}
+        )
+    if not isinstance(metadata, dict):
+        return ()
+    return _ytdlp_comments(metadata)
+
+
+def _load_video_info(
+    request_id: int,
+    loader: Callable[[], VideoInfo],
+    url: str | None,
+    comments_loader: Callable[[], tuple[VideoComment, ...]] | None,
+    results: queue.Queue[tuple[int, VideoInfo | None, str | None]],
+) -> None:
+    try:
+        info = loader()
+    except Exception as error:
+        results.put((request_id, None, _video_info_error_message(url, error)))
+        return
+    results.put((request_id, info, None))
+    if comments_loader is None:
+        return
+    try:
+        comments = comments_loader()
+    except Exception:
+        return
+    if comments:
+        results.put(
+            (request_id, VideoInfo(info.title, info.details, comments), None)
+        )
+
+
 def _fetch_playlist_episodes(
     yt_dlp: str,
     url: str,
@@ -2087,22 +2146,18 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         fit_window_height()
 
     def request_video_info(
-        loader: Callable[[], VideoInfo], url: str | None = None
+        loader: Callable[[], VideoInfo],
+        url: str | None = None,
+        comments_loader: Callable[[], tuple[VideoComment, ...]] | None = None,
     ) -> None:
         nonlocal metadata_request
         metadata_request += 1
         request_id = metadata_request
-
-        def load_video_info() -> None:
-            try:
-                info = loader()
-                error_message = None
-            except Exception as error:
-                info = None
-                error_message = _video_info_error_message(url, error)
-            metadata_results.put((request_id, info, error_message))
-
-        threading.Thread(target=load_video_info, daemon=True).start()
+        threading.Thread(
+            target=_load_video_info,
+            args=(request_id, loader, url, comments_loader, metadata_results),
+            daemon=True,
+        ).start()
 
     def request_playlist_episode_info(
         episode: PlaylistEpisode,
@@ -2124,9 +2179,19 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                         pass
             except FileNotFoundError:
                 return
+            comments_loader = (
+                (
+                    lambda: fetch_youtube_video_comments(
+                        yt_dlp, episode.target, node_runtime
+                    )
+                )
+                if is_youtube_url(episode.target)
+                else None
+            )
             request_video_info(
                 lambda: fetch_url_video_info(yt_dlp, episode.target, node_runtime),
                 episode.target,
+                comments_loader,
             )
             return
 
@@ -2412,8 +2477,19 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             track_active_playlist(
                 (PlaylistEpisode("Video", url),), request_info=False
             )
+            comments_loader = (
+                (
+                    lambda: fetch_youtube_video_comments(
+                        yt_dlp, url, node_runtime
+                    )
+                )
+                if is_youtube_url(url)
+                else None
+            )
             request_video_info(
-                lambda: fetch_url_video_info(yt_dlp, url, node_runtime), url
+                lambda: fetch_url_video_info(yt_dlp, url, node_runtime),
+                url,
+                comments_loader,
             )
         else:
             track_active_playlist((), request_info=False)
