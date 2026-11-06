@@ -6,8 +6,9 @@ Its drag-and-drop window uses the `tkinterdnd2` package.
 
 ## External tools
 
-`mpv`, `yt-dlp`, and FFmpeg are separate executables; installing the Python
-requirements does not install them. Install all three for the full feature set:
+`mpv`, `yt-dlp`, FFmpeg, and Node.js are separate executables. Installing the
+Python requirements do not install them. Install all four for the full feature
+set:
 
 - **mpv** is required to play local files and URLs.
 - **yt-dlp** is required for URL playback, URL and playlist details, and downloads.
@@ -15,9 +16,13 @@ requirements does not install them. Install all three for the full feature set:
 - **FFmpeg** is required for downloads, including merging separate audio/video
   streams. Its companion `ffprobe` (usually included in FFmpeg builds) reads
   local-file media details.
+- **Node.js** is required for YouTube URL playback, inspection, and downloads.
+  DLPPlayer uses it as yt-dlp's JavaScript runtime; other sites and local files
+  do not need it.
 
-Local-file playback needs only mpv. URL playback needs mpv and yt-dlp; downloads
-need yt-dlp and FFmpeg. DLPPlayer checks its configured tool locations and then
+Local-file playback needs only mpv. URL playback needs mpv and yt-dlp; YouTube
+URLs also need Node.js. Downloads need yt-dlp and FFmpeg; YouTube downloads also
+need Node.js. DLPPlayer checks its configured tool locations and then
 `PATH`; see the tool-location settings below to configure paths.
 
 Install the GUI dependency once:
@@ -118,7 +123,8 @@ Download options:
 - `--no-cookies`: do not read browser cookies.
 - `--yt-dlp PATH`, `--ffmpeg PATH`, `--mpv PATH`: override tool locations;
   `--ffmpeg` may be an executable or its containing directory.
-- `--node PATH`: Node.js executable for YouTube JavaScript challenge support.
+- `--node PATH`: Node.js executable used by yt-dlp as its JavaScript runtime for
+  YouTube downloads. GUI YouTube actions use `DLPPLAYER_NODE` or `node_path`.
 
 Direct yt-dlp requests retry cookie sources in Firefox, Chrome, then Edge order.
 MPV's embedded yt-dlp hook still uses Firefox.
