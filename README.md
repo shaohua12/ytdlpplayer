@@ -1,4 +1,4 @@
-# DLPPlayer — yt-dlp video downloader for Windows
+# DLPPlayer — yt-dlp downloader/player wrapper for Windows
 
 A small Python app that uses yt-dlp and ffmpeg to download videos from sites
 supported by yt-dlp and open video links in mpv.
