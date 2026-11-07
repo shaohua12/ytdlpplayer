@@ -354,6 +354,28 @@ class MpvIpcServerTests(unittest.TestCase):
 
 
 class MpvProgressTests(unittest.TestCase):
+    def test_extracts_status_label_and_percentage(self):
+        self.assertEqual(
+            dlpplayer._playback_progress_display(
+                "Example episode | Playing | 4:47 / 16:35 (30%)"
+            ),
+            ("Example episode | Playing", 30),
+        )
+        self.assertEqual(
+            dlpplayer._playback_progress_display(
+                "Paused | 4:47 / 16:35 (30%)"
+            ),
+            ("Paused", 30),
+        )
+
+    def test_ignores_status_without_a_valid_percentage(self):
+        self.assertIsNone(
+            dlpplayer._playback_progress_display("Playing | loading media...")
+        )
+        self.assertIsNone(
+            dlpplayer._playback_progress_display("Playing | 4:47 / 16:35 (101%)")
+        )
+
     def test_formats_playback_time_and_percentage(self):
         self.assertEqual(dlpplayer._format_mpv_time(3661.9), "1:01:01")
         self.assertEqual(

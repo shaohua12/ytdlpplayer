@@ -646,6 +646,24 @@ def _mpv_status_text(server: str, fallback_title: str | None = None) -> str | No
     return f"{title} | {progress}" if title else progress
 
 
+def _playback_progress_display(status: str) -> tuple[str, int] | None:
+    percent_start = status.rfind(" (")
+    if percent_start < 0 or not status.endswith("%)"):
+        return None
+    percent_text = status[percent_start + 2 : -2]
+    if not percent_text.isdecimal():
+        return None
+    percentage = int(percent_text)
+    if not 0 <= percentage <= 100:
+        return None
+
+    playback_status = status[:percent_start]
+    separator = playback_status.rfind(" | ")
+    if separator < 0 or " / " not in playback_status[separator + 3 :]:
+        return None
+    return playback_status[:separator].strip(), percentage
+
+
 def build_video_info_command(
     yt_dlp: str,
     url: str,
@@ -2092,8 +2110,30 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         widget.configure(state="disabled")
 
     def fit_selectable_text(widget: tk.Text) -> None:
+        if not widget.winfo_ismapped() or widget.winfo_width() <= 1:
+            return
         display_lines = widget.count("1.0", "end-1c", "displaylines")
-        widget.configure(height=max(1, display_lines[0] if display_lines else 1))
+        height = max(1, display_lines[0] if display_lines else 1)
+        if int(widget.cget("height")) != height:
+            widget.configure(height=height)
+            root.after_idle(fit_window_height)
+
+    video_title_text.bind(
+        "<Configure>",
+        lambda _event: fit_selectable_text(video_title_text),
+    )
+    video_details_text.bind(
+        "<Configure>",
+        lambda _event: fit_selectable_text(video_details_text),
+    )
+    video_title_text.bind(
+        "<Map>",
+        lambda _event: fit_selectable_text(video_title_text),
+    )
+    video_details_text.bind(
+        "<Map>",
+        lambda _event: fit_selectable_text(video_details_text),
+    )
 
 
     def fit_window_height() -> None:
@@ -3182,8 +3222,37 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     stop_button.configure(command=stop_playback)
     status_row = ttk.Frame(frame)
     status_row.pack(fill="x", pady=(10, 0))
-    status_label = ttk.Label(status_row, textvariable=status, wraplength=460)
+    status_label = ttk.Label(status_row, wraplength=380)
     status_label.pack(side="left", fill="x", expand=True)
+    progress_frame = ttk.Frame(status_row)
+    progress_bar = ttk.Progressbar(
+        progress_frame,
+        orient="horizontal",
+        mode="determinate",
+        maximum=100,
+        length=140,
+    )
+    progress_bar.pack(fill="x", expand=True)
+    progress_percentage = ttk.Label(progress_frame, text="", anchor="center")
+    progress_percentage.place(relx=0.5, rely=0.5, anchor="center")
+
+    def update_status_display(*_args: str) -> None:
+        current_status = status.get()
+        progress = _playback_progress_display(current_status)
+        if progress is None:
+            status_label.configure(text=current_status)
+            progress_frame.pack_forget()
+            return
+        status_text, percentage = progress
+        status_label.configure(text=status_text)
+        progress_bar.configure(value=percentage)
+        progress_percentage.configure(text=f"{percentage}%")
+        if not progress_frame.winfo_manager():
+            progress_frame.pack(side="right", padx=(8, 0))
+
+    status.trace_add("write", update_status_display)
+    update_status_display()
+
     lamp_background = (
         ttk.Style(root).lookup("TFrame", "background") or root.cget("background")
     )
