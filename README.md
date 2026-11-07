@@ -50,7 +50,9 @@ Use **Save playlist** beside the episode selector to export the current list as 
 M3U/M3U8 file; drop that file into the app later to load it locally.
 A DLPPlayer-managed MPV process stays open after normal playback finishes. GUI and
 CLI playback reuse that per-user process for subsequent URLs, playlists, and local
-media. **Stop** stops normal playback but leaves MPV ready. An MPV started
+media. Before reusing MPV for YouTube, DLPPlayer refreshes the yt-dlp path, format,
+Firefox-cookie, and JavaScript-runtime options over IPC. **Stop** stops normal
+playback but leaves MPV ready. An MPV started
 independently without DLPPlayer's IPC endpoint cannot be attached. `RD...` radio
 mixes use ten-item batches; each batch plays in order, and the next batch loads
 when MPV finishes. Use **Stop** to end the mix; closing MPV also ends the current

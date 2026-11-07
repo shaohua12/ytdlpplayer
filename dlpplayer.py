@@ -546,6 +546,34 @@ def _mpv_property_value(server: str, property_name: str) -> object | None:
     return response.get("data")
 
 
+def _configure_mpv_for_youtube(
+    server: str, yt_dlp: str | None, node_runtime: str | None
+) -> bool:
+    if not yt_dlp or not node_runtime:
+        return False
+
+    script_options = _mpv_property_value(server, "options/script-opts")
+    script_options = dict(script_options) if isinstance(script_options, dict) else {}
+    script_options["ytdl_hook-ytdl_path"] = yt_dlp
+
+    raw_options = _mpv_property_value(server, "options/ytdl-raw-options")
+    raw_options = dict(raw_options) if isinstance(raw_options, dict) else {}
+    raw_options["cookies-from-browser"] = "firefox"
+    raw_options["js-runtimes"] = f"node:{node_runtime}"
+
+    for property_name, value in (
+        ("options/script-opts", script_options),
+        ("options/ytdl-format", VIDEO_FORMAT_DEFAULT),
+        ("options/ytdl-raw-options", raw_options),
+    ):
+        response = _mpv_ipc_request(
+            server, ["set_property", property_name, value]
+        )
+        if response is None or response.get("error") != "success":
+            return False
+    return True
+
+
 def _mpv_seconds(value: object) -> float | None:
     if isinstance(value, bool):
         return None
@@ -2447,28 +2475,59 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         if not is_http_url(url):
             status.set("Please use a valid HTTP(S) URL.")
             return False
+        is_youtube = is_youtube_url(url)
+        yt_dlp = None
+        node_runtime = None
+        if is_youtube:
+            try:
+                yt_dlp = resolve_tool(
+                    None, "DLPPLAYER_YTDLP", YTDLP_DEFAULT, "yt-dlp"
+                )
+                node_runtime = resolve_tool(
+                    None, "DLPPLAYER_NODE", NODE_DEFAULT, "node"
+                )
+            except (FileNotFoundError, OSError) as error:
+                status.set(f"Could not play URL: {error}")
+                messagebox.showerror("Could not play URL", str(error), parent=root)
+                return False
         if (
             (current_player is None or current_player.poll() is None)
             and current_player_ipc_server is not None
-            and _load_mpv_content(
-                current_player_ipc_server, ["loadfile", url, "replace"]
-            )
         ):
-            stop_button.configure(state="normal")
-            set_playback_lamp(True, True)
-            if _youtube_playlist_url(url) is None:
-                track_active_playlist(
-                    (PlaylistEpisode("Video", url),), request_info=False
+            youtube_configured = True
+            if is_youtube:
+                mpv_available = (
+                    _mpv_property_value(
+                        current_player_ipc_server, "idle-active"
+                    )
+                    is not None
                 )
-                request_playlist_episode_info(PlaylistEpisode("Video", url))
-            else:
-                track_active_playlist((), request_info=False)
-            url_entry.delete(0, tk.END)
-            url_entry.insert(0, display_url)
-            status.set("MPV switched to the requested video.")
-            if current_player is None:
-                root.after(2000, check_player, None)
-            return True
+                youtube_configured = mpv_available and _configure_mpv_for_youtube(
+                    current_player_ipc_server, yt_dlp, node_runtime
+                )
+                if mpv_available and not youtube_configured:
+                    status.set(
+                        "Could not configure the existing MPV for YouTube playback."
+                    )
+                    return False
+            if youtube_configured and _load_mpv_content(
+                current_player_ipc_server, ["loadfile", url, "replace"]
+            ):
+                stop_button.configure(state="normal")
+                set_playback_lamp(True, True)
+                if _youtube_playlist_url(url) is None:
+                    track_active_playlist(
+                        (PlaylistEpisode("Video", url),), request_info=False
+                    )
+                    request_playlist_episode_info(PlaylistEpisode("Video", url))
+                else:
+                    track_active_playlist((), request_info=False)
+                url_entry.delete(0, tk.END)
+                url_entry.insert(0, display_url)
+                status.set("MPV switched to the requested video.")
+                if current_player is None:
+                    root.after(2000, check_player, None)
+                return True
         if current_player is not None and current_player.poll() is None:
             set_playback_lamp(True, True)
             status.set("Could not reach the current MPV player; leaving it open.")
@@ -2478,9 +2537,11 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         root.update_idletasks()
         try:
             mpv = resolve_tool(None, "DLPPLAYER_MPV", MPV_DEFAULT, "mpv")
-            yt_dlp = resolve_tool(None, "DLPPLAYER_YTDLP", YTDLP_DEFAULT, "yt-dlp")
-            node_runtime = None
-            if is_youtube_url(url):
+            if yt_dlp is None:
+                yt_dlp = resolve_tool(
+                    None, "DLPPLAYER_YTDLP", YTDLP_DEFAULT, "yt-dlp"
+                )
+            if is_youtube and node_runtime is None:
                 node_runtime = resolve_tool(
                     None, "DLPPLAYER_NODE", NODE_DEFAULT, "node"
                 )
@@ -2547,13 +2608,47 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             status.set(f"Local media file was not found: {missing_path}")
             return
 
+        has_youtube_targets = any(is_youtube_url(target) for target in targets)
+        yt_dlp = None
+        node_runtime = None
+        if has_youtube_targets:
+            try:
+                yt_dlp = resolve_tool(
+                    None, "DLPPLAYER_YTDLP", YTDLP_DEFAULT, "yt-dlp"
+                )
+                node_runtime = resolve_tool(
+                    None, "DLPPLAYER_NODE", NODE_DEFAULT, "node"
+                )
+            except (FileNotFoundError, OSError) as error:
+                status.set(f"Could not play playlist: {error}")
+                messagebox.showerror(
+                    "Could not play playlist", str(error), parent=root
+                )
+                return
+
         if (
             (current_player is None or current_player.poll() is None)
             and current_player_ipc_server is not None
         ):
+            youtube_configured = True
+            if has_youtube_targets:
+                mpv_available = (
+                    _mpv_property_value(
+                        current_player_ipc_server, "idle-active"
+                    )
+                    is not None
+                )
+                youtube_configured = mpv_available and _configure_mpv_for_youtube(
+                    current_player_ipc_server, yt_dlp, node_runtime
+                )
+                if mpv_available and not youtube_configured:
+                    status.set(
+                        "Could not configure the existing MPV for YouTube playback."
+                    )
+                    return
             try:
                 _write_mpv_playlist(playlist_manifest_path, episodes)
-                jumped = _load_mpv_content(
+                jumped = youtube_configured and _load_mpv_content(
                     current_player_ipc_server,
                     ["loadlist", str(playlist_manifest_path), "replace"],
                 )
@@ -2587,19 +2682,14 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         clear_video_info()
         status.set("Starting playlist in mpv...")
         root.update_idletasks()
-        yt_dlp = None
-        node_runtime = None
         try:
             mpv = resolve_tool(None, "DLPPLAYER_MPV", MPV_DEFAULT, "mpv")
             ipc_server = _mpv_ipc_server_path()
             _write_mpv_playlist(playlist_manifest_path, episodes)
             if any(is_http_url(target) for target in targets):
-                yt_dlp = resolve_tool(
-                    None, "DLPPLAYER_YTDLP", YTDLP_DEFAULT, "yt-dlp"
-                )
-                if any(is_youtube_url(target) for target in targets):
-                    node_runtime = resolve_tool(
-                        None, "DLPPLAYER_NODE", NODE_DEFAULT, "node"
+                if yt_dlp is None:
+                    yt_dlp = resolve_tool(
+                        None, "DLPPLAYER_YTDLP", YTDLP_DEFAULT, "yt-dlp"
                     )
                 command = _build_mpv_playlist_command(
                     mpv,
