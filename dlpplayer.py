@@ -1987,23 +1987,46 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     save_playlist_button.pack(side="right", padx=(8, 0))
 
     info_frame = ttk.LabelFrame(frame, text="Video information", padding=8)
-    video_title = tk.StringVar(value="")
-    video_details = tk.StringVar(value="")
     video_issue = tk.StringVar(value="")
-    video_title_label = ttk.Label(
+    info_label_style = ttk.Style(root)
+    info_background = (
+        info_label_style.lookup("TLabel", "background")
+        or root.cget("background")
+    )
+    info_foreground = info_label_style.lookup("TLabel", "foreground") or "black"
+    info_font = info_label_style.lookup("TLabel", "font") or "TkDefaultFont"
+    video_title_text = tk.Text(
         info_frame,
-        textvariable=video_title,
+        height=1,
+        wrap="word",
         font=("Segoe UI", 16, "bold"),
-        wraplength=520,
+        relief="flat",
+        borderwidth=0,
+        highlightthickness=0,
+        padx=0,
+        pady=0,
+        background=info_background,
+        foreground=info_foreground,
+        state="disabled",
+        takefocus=True,
     )
-    video_title_label.pack(anchor="w", pady=(0, 6))
-    video_details_label = ttk.Label(
+    video_title_text.pack(fill="x", pady=(0, 6))
+    video_details_text = tk.Text(
         info_frame,
-        textvariable=video_details,
-        wraplength=520,
-        justify="left",
+        height=1,
+        wrap="word",
+        font=info_font,
+        relief="flat",
+        borderwidth=0,
+        highlightthickness=0,
+        padx=0,
+        pady=0,
+        background=info_background,
+        foreground=info_foreground,
+        state="disabled",
+        takefocus=True,
     )
-    video_details_label.pack(fill="x", pady=(6, 0))
+    video_details_text.pack(fill="x", pady=(6, 0))
     video_issue_label = ttk.Label(
         info_frame,
         textvariable=video_issue,
@@ -2060,6 +2083,17 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             comments_frame.pack(fill="x", pady=(8, 0))
         else:
             comments_frame.pack_forget()
+
+    def set_selectable_text(widget: tk.Text, value: str) -> None:
+        widget.configure(state="normal", height=1)
+        widget.delete("1.0", tk.END)
+        if value:
+            widget.insert("1.0", value)
+        widget.configure(state="disabled")
+
+    def fit_selectable_text(widget: tk.Text) -> None:
+        display_lines = widget.count("1.0", "end-1c", "displaylines")
+        widget.configure(height=max(1, display_lines[0] if display_lines else 1))
 
 
     def fit_window_height() -> None:
@@ -2195,8 +2229,8 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         nonlocal metadata_request
         metadata_request += 1
         info_frame.pack_forget()
-        video_title.set("")
-        video_details.set("")
+        set_selectable_text(video_title_text, "")
+        set_selectable_text(video_details_text, "")
         video_issue.set("")
         display_comments(())
         fit_window_height()
@@ -2267,25 +2301,29 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             if info is None:
                 if error_message is None:
                     continue
-                video_title.set("")
-                video_details.set("")
-                video_title_label.pack_forget()
-                video_details_label.pack_forget()
+                set_selectable_text(video_title_text, "")
+                set_selectable_text(video_details_text, "")
+                video_title_text.pack_forget()
+                video_details_text.pack_forget()
                 video_issue.set(error_message)
                 if not video_issue_label.winfo_manager():
                     video_issue_label.pack(fill="x", pady=(6, 0))
                 display_comments(())
             else:
-                video_title.set(info.title)
-                video_details.set("\n".join(info.details))
+                set_selectable_text(video_title_text, info.title)
+                set_selectable_text(video_details_text, "\n".join(info.details))
                 video_issue.set("")
                 video_issue_label.pack_forget()
-                if not video_title_label.winfo_manager():
-                    video_title_label.pack(anchor="w", pady=(0, 6))
-                if not video_details_label.winfo_manager():
-                    video_details_label.pack(fill="x", pady=(6, 0))
+                if not video_title_text.winfo_manager():
+                    video_title_text.pack(fill="x", pady=(0, 6))
+                if not video_details_text.winfo_manager():
+                    video_details_text.pack(fill="x", pady=(6, 0))
                 display_comments(info.comments)
             info_frame.pack(before=status_row, fill="x", pady=(10, 0))
+            if info is not None:
+                root.update_idletasks()
+                fit_selectable_text(video_title_text)
+                fit_selectable_text(video_details_text)
             fit_window_height()
         root.after(100, poll_video_info)
 
@@ -2396,7 +2434,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             update_current_episode_info()
             ipc_server = current_player_ipc_server
             playback_status = (
-                _mpv_status_text(ipc_server, video_title.get())
+                _mpv_status_text(
+                    ipc_server, video_title_text.get("1.0", "end-1c").strip()
+                )
                 if ipc_server is not None
                 else None
             )
@@ -2420,7 +2460,10 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         if player.poll() is None:
             update_current_episode_info()
             playback_status = (
-                _mpv_status_text(current_player_ipc_server, video_title.get())
+                _mpv_status_text(
+                    current_player_ipc_server,
+                    video_title_text.get("1.0", "end-1c").strip(),
+                )
                 if current_player_ipc_server is not None
                 else None
             )

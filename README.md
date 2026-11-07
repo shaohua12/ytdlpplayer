@@ -71,6 +71,7 @@ Single-video URLs play with the same button.
 
 The window title prompts "Drop a video, playlist, or link."
 The information panel shows the video title prominently and hides when mpv exits.
+Drag-select any part of the title or metadata and press Ctrl+C to copy it.
 The status bar shows a black play triangle while the mpv process runs and a solid
 black square after it stops.
 The panel shows up to 100 available URL comments in descending like-count

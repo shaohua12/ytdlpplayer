@@ -1216,7 +1216,6 @@ class BilibiliCommentFetchTests(unittest.TestCase):
         )
 
 
-
 class VideoInformationTests(unittest.TestCase):
     def test_formats_unlabeled_title_resolution_and_duration(self):
         info = format_video_info("  Example title  ", 1920, 1080, 3665.9)
