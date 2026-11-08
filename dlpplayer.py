@@ -36,7 +36,14 @@ DEFAULT_RADIO_MIX_BATCH_SIZE = 68
 
 YOUTUBE_COMMENT_FETCH_LIMIT = 100
 YOUTUBE_COMMENT_FETCH_TIMEOUT = 120
-YTDLP_COOKIE_BROWSER_ORDER = ("firefox", "chrome", "edge")
+DEFAULT_COOKIE_BROWSER = "brave"
+YTDLP_COOKIE_BROWSER_ORDER = ("brave", "firefox", "chrome", "edge")
+CHROMIUM_USER_DATA_SUBDIRS = {
+    "brave": ("BraveSoftware", "Brave-Browser", "User Data"),
+    "chrome": ("Google", "Chrome", "User Data"),
+    "chromium": ("Chromium", "User Data"),
+    "edge": ("Microsoft", "Edge", "User Data"),
+}
 VIDEO_COMMENT_DISPLAY_LIMIT = 100
 BILIBILI_COMMENT_PAGE_SIZE = 20
 BILIBILI_COMMENT_TIMEOUT = 5
@@ -56,6 +63,7 @@ class AppSettings:
     node_path: Path | None = NODE_DEFAULT
     python_library_path: Path | None = None
     radio_mix_batch_size: int = DEFAULT_RADIO_MIX_BATCH_SIZE
+    cookie_browser: str = DEFAULT_COOKIE_BROWSER
 
     @property
     def video_format(self) -> str:
@@ -134,9 +142,21 @@ def load_settings(settings_path: Path = SETTINGS_PATH) -> AppSettings:
         )
         radio_mix_batch_size = DEFAULT_RADIO_MIX_BATCH_SIZE
 
+    cookie_browser = data.get("cookie_browser", DEFAULT_COOKIE_BROWSER)
+    if not isinstance(cookie_browser, str) or not cookie_browser.strip():
+        print(
+            f"Warning: cookie_browser in {settings_path} must be a non-empty string. "
+            "Using the default setting.",
+            file=sys.stderr,
+        )
+        cookie_browser = DEFAULT_COOKIE_BROWSER
+    else:
+        cookie_browser = cookie_browser.strip().casefold()
+
     return AppSettings(
         max_allowed_resolution=max_resolution,
         radio_mix_batch_size=radio_mix_batch_size,
+        cookie_browser=cookie_browser,
         yt_dlp_path=_settings_path_value(data, "yt_dlp_path", YTDLP_DEFAULT, settings_path),
         mpv_path=_settings_path_value(data, "mpv_path", MPV_DEFAULT, settings_path),
         ffmpeg_path=_settings_path_value(data, "ffmpeg_path", FFMPEG_DEFAULT, settings_path),
@@ -167,6 +187,7 @@ MPV_DEFAULT = SETTINGS.mpv_path
 FFMPEG_DEFAULT = SETTINGS.ffmpeg_path
 NODE_DEFAULT = SETTINGS.node_path
 RADIO_MIX_BATCH_SIZE = SETTINGS.radio_mix_batch_size
+COOKIE_BROWSER = SETTINGS.cookie_browser
 VIDEO_FORMAT_DEFAULT = SETTINGS.video_format
 _add_python_library_path(SETTINGS.python_library_path)
 
@@ -276,7 +297,7 @@ def _video_info_error_message(url: str | None, error: object) -> str:
         and "members-only content" in message.casefold()
     ):
         return (
-            "YouTube reports this video is members-only. Check that the Firefox "
+            "YouTube reports this video is members-only. Check that the browser "
             "profile used by DLPPlayer is signed in to an account that has joined "
             "the channel."
         )
@@ -334,16 +355,21 @@ def resolve_tool(
     )
 
 
+def _cookie_source(browser: str, profile: str | None = None) -> str:
+    return f"{browser}:{profile}" if profile else browser
+
+
 def build_download_command(
     yt_dlp: str,
     ffmpeg_location: str,
     output_dir: Path,
     url: str,
-    firefox_profile: str | None = None,
+    cookie_profile: str | None = None,
     use_cookies: bool = True,
     result_file: str | None = None,
     video_format: str = VIDEO_FORMAT_DEFAULT,
     node_runtime: str | None = None,
+    cookie_browser: str = COOKIE_BROWSER,
 ) -> list[str]:
     command = [
         yt_dlp,
@@ -364,10 +390,12 @@ def build_download_command(
         runtime = f"node:{node_runtime}" if node_runtime else "node"
         command.extend(["--js-runtimes", runtime])
     if use_cookies:
-        browser = "firefox"
-        if firefox_profile:
-            browser += f":{firefox_profile}"
-        command.extend(["--cookies-from-browser", browser])
+        command.extend(
+            [
+                "--cookies-from-browser",
+                _cookie_source(cookie_browser, cookie_profile),
+            ]
+        )
     if result_file:
         command.extend(["--print-to-file", "after_move:filepath", result_file])
     command.append(url)
@@ -379,11 +407,12 @@ def _build_mpv_playlist_command(
     yt_dlp: str,
     urls: tuple[str, ...],
     node_runtime: str | None = None,
-    firefox_profile: str | None = None,
+    cookie_profile: str | None = None,
     use_cookies: bool = True,
     playlist_file: str | None = None,
     ipc_server: str | None = None,
     keep_open: bool = True,
+    cookie_browser: str = COOKIE_BROWSER,
 ) -> list[str]:
     if not urls:
         raise ValueError("At least one playlist item is required.")
@@ -399,10 +428,10 @@ def _build_mpv_playlist_command(
         command.append(f"--input-ipc-server={ipc_server}")
     raw_options = []
     if use_cookies:
-        browser = "firefox"
-        if firefox_profile:
-            browser += f":{firefox_profile}"
-        raw_options.append(f"cookies-from-browser={browser}")
+        raw_options.append(
+            "cookies-from-browser="
+            + _cookie_source(cookie_browser, cookie_profile)
+        )
     if any(is_youtube_url(url) for url in urls):
         runtime = f"node:{node_runtime}" if node_runtime else "node"
         raw_options.append(f"js-runtimes={runtime}")
@@ -420,20 +449,22 @@ def build_mpv_url_command(
     yt_dlp: str,
     url: str,
     node_runtime: str | None = None,
-    firefox_profile: str | None = None,
+    cookie_profile: str | None = None,
     use_cookies: bool = True,
     ipc_server: str | None = None,
     keep_open: bool = True,
+    cookie_browser: str = COOKIE_BROWSER,
 ) -> list[str]:
     return _build_mpv_playlist_command(
         mpv,
         yt_dlp,
         (url,),
         node_runtime,
-        firefox_profile,
+        cookie_profile,
         use_cookies,
         ipc_server=ipc_server,
         keep_open=keep_open,
+        cookie_browser=cookie_browser,
     )
 
 def _mpv_ipc_server_path() -> str:
@@ -546,8 +577,91 @@ def _mpv_property_value(server: str, property_name: str) -> object | None:
     return response.get("data")
 
 
+def _chromium_user_data_root(browser: str) -> Path | None:
+    if os.name != "nt":
+        return None
+    parts = CHROMIUM_USER_DATA_SUBDIRS.get(browser)
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not parts or not local_app_data:
+        return None
+    return Path(local_app_data).joinpath(*parts)
+
+
+def _chromium_cookie_database(root: Path) -> Path | None:
+    for profile in (root / "Default", *_sorted_profiles(root)):
+        database = profile / "Network" / "Cookies"
+        if database.is_file():
+            return database
+    return None
+
+
+def _sorted_profiles(root: Path) -> list[Path]:
+    try:
+        return sorted(
+            path for path in root.glob("Profile *") if path.is_dir()
+        )
+    except OSError:
+        return []
+
+
+def _chromium_uses_app_bound_encryption(root: Path) -> bool:
+    # yt-dlp cannot decrypt cookies using Chromium's app-bound encryption,
+    # which stores v20 cookies (yt-dlp issue 10927).
+    try:
+        data = json.loads((root / "Local State").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    os_crypt = data.get("os_crypt") if isinstance(data, dict) else None
+    return isinstance(os_crypt, dict) and "app_bound_encrypted_key" in os_crypt
+
+
+def _cookie_browser_usable(browser: str) -> bool:
+    name = browser.split("+", 1)[0].split(":", 1)[0].casefold()
+    if os.name != "nt":
+        return True
+    if name == "firefox":
+        root = Path(os.environ.get("APPDATA", "")) / "Mozilla" / "Firefox" / "Profiles"
+        try:
+            return any(
+                (profile / "cookies.sqlite").is_file()
+                for profile in root.glob("*")
+            )
+        except OSError:
+            return False
+
+    root = _chromium_user_data_root(name)
+    if root is None:
+        return True
+    database = _chromium_cookie_database(root)
+    if database is None or _chromium_uses_app_bound_encryption(root):
+        return False
+    try:
+        # Chromium locks the cookie database exclusively while it runs.
+        with database.open("rb"):
+            pass
+    except OSError:
+        return False
+    return True
+
+
+def _usable_cookie_browser(preferred: str = COOKIE_BROWSER) -> str | None:
+    candidates = [preferred]
+    candidates.extend(
+        browser
+        for browser in YTDLP_COOKIE_BROWSER_ORDER
+        if browser.casefold() != preferred.split(":", 1)[0].casefold()
+    )
+    for browser in candidates:
+        if _cookie_browser_usable(browser):
+            return browser
+    return None
+
+
 def _configure_mpv_for_youtube(
-    server: str, yt_dlp: str | None, node_runtime: str | None
+    server: str,
+    yt_dlp: str | None,
+    node_runtime: str | None,
+    cookie_browser: str | None = COOKIE_BROWSER,
 ) -> bool:
     if not yt_dlp or not node_runtime:
         return False
@@ -558,7 +672,10 @@ def _configure_mpv_for_youtube(
 
     raw_options = _mpv_property_value(server, "options/ytdl-raw-options")
     raw_options = dict(raw_options) if isinstance(raw_options, dict) else {}
-    raw_options["cookies-from-browser"] = "firefox"
+    if cookie_browser:
+        raw_options["cookies-from-browser"] = cookie_browser
+    else:
+        raw_options.pop("cookies-from-browser", None)
     raw_options["js-runtimes"] = f"node:{node_runtime}"
 
     for property_name, value in (
@@ -669,6 +786,7 @@ def build_video_info_command(
     url: str,
     node_runtime: str | None = None,
     include_comments: bool = False,
+    cookie_browser: str = COOKIE_BROWSER,
 ) -> list[str]:
     command = [
         yt_dlp,
@@ -681,7 +799,7 @@ def build_video_info_command(
         "--format",
         VIDEO_FORMAT_DEFAULT,
         "--cookies-from-browser",
-        "firefox",
+        cookie_browser,
     ]
     if is_youtube_url(url):
         runtime = f"node:{node_runtime}" if node_runtime else "node"
@@ -703,6 +821,7 @@ def _build_playlist_command(
     url: str,
     node_runtime: str | None = None,
     playlist_items: tuple[int, int] | None = None,
+    cookie_browser: str = COOKIE_BROWSER,
 ) -> list[str]:
     command = [
         yt_dlp,
@@ -712,7 +831,7 @@ def _build_playlist_command(
         "--flat-playlist",
         "--no-write-comments",
         "--cookies-from-browser",
-        "firefox",
+        cookie_browser,
     ]
     if playlist_items is not None:
         start, end = playlist_items
@@ -727,13 +846,21 @@ def _build_playlist_command(
 
 
 def build_playlist_command(
-    yt_dlp: str, url: str, node_runtime: str | None = None
+    yt_dlp: str,
+    url: str,
+    node_runtime: str | None = None,
+    cookie_browser: str = COOKIE_BROWSER,
 ) -> list[str]:
-    return _build_playlist_command(yt_dlp, url, node_runtime)
+    return _build_playlist_command(
+        yt_dlp, url, node_runtime, cookie_browser=cookie_browser
+    )
 
 
 def build_episode_metadata_command(
-    yt_dlp: str, url: str, node_runtime: str | None = None
+    yt_dlp: str,
+    url: str,
+    node_runtime: str | None = None,
+    cookie_browser: str = COOKIE_BROWSER,
 ) -> list[str]:
     command = [
         yt_dlp,
@@ -744,7 +871,7 @@ def build_episode_metadata_command(
         "--no-playlist",
     ]
     if is_http_url(url):
-        command.extend(["--cookies-from-browser", "firefox"])
+        command.extend(["--cookies-from-browser", cookie_browser])
     if is_youtube_url(url):
         runtime = f"node:{node_runtime}" if node_runtime else "node"
         command.extend(["--js-runtimes", runtime])
@@ -768,15 +895,18 @@ def _run_ytdlp_with_browser_fallback(
         for browser in YTDLP_COOKIE_BROWSER_ORDER
         if browser != browser_name
     )
+    first_result = None
     result = None
     for browser in browser_sources:
         attempt = command.copy()
         attempt[cookie_index + 1] = browser
         result = subprocess.run(attempt, **run_options)
+        if first_result is None:
+            first_result = result
         if result.returncode == 0:
             return result
-    assert result is not None
-    return result
+    assert first_result is not None
+    return first_result
 
 
 @dataclass(frozen=True)
@@ -1899,11 +2029,12 @@ def download(args: argparse.Namespace) -> int:
                 ffmpeg,
                 args.output_dir,
                 args.url,
-                args.firefox_profile,
+                args.cookie_profile,
                 not args.no_cookies,
                 result_file,
                 args.video_format,
                 node_runtime,
+                args.cookie_browser or COOKIE_BROWSER,
             )
             result = _run_ytdlp_with_browser_fallback(command, check=False)
             if result.returncode:
@@ -2586,7 +2717,10 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                     is not None
                 )
                 youtube_configured = mpv_available and _configure_mpv_for_youtube(
-                    current_player_ipc_server, yt_dlp, node_runtime
+                    current_player_ipc_server,
+                    yt_dlp,
+                    node_runtime,
+                    _usable_cookie_browser(),
                 )
                 if mpv_available and not youtube_configured:
                     status.set(
@@ -2629,12 +2763,15 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                     None, "DLPPLAYER_NODE", NODE_DEFAULT, "node"
                 )
             ipc_server = _mpv_ipc_server_path()
+            cookie_browser = _usable_cookie_browser()
             command = build_mpv_url_command(
                 mpv,
                 yt_dlp,
                 url,
                 node_runtime,
                 ipc_server=ipc_server,
+                use_cookies=cookie_browser is not None,
+                cookie_browser=cookie_browser or COOKIE_BROWSER,
             )
             player = subprocess.Popen(command)
         except (FileNotFoundError, OSError) as error:
@@ -2722,7 +2859,10 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                     is not None
                 )
                 youtube_configured = mpv_available and _configure_mpv_for_youtube(
-                    current_player_ipc_server, yt_dlp, node_runtime
+                    current_player_ipc_server,
+                    yt_dlp,
+                    node_runtime,
+                    _usable_cookie_browser(),
                 )
                 if mpv_available and not youtube_configured:
                     status.set(
@@ -2774,6 +2914,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                     yt_dlp = resolve_tool(
                         None, "DLPPLAYER_YTDLP", YTDLP_DEFAULT, "yt-dlp"
                     )
+                cookie_browser = _usable_cookie_browser()
                 command = _build_mpv_playlist_command(
                     mpv,
                     yt_dlp,
@@ -2782,6 +2923,8 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                     playlist_file=str(playlist_manifest_path),
                     ipc_server=ipc_server,
                     keep_open=True,
+                    use_cookies=cookie_browser is not None,
+                    cookie_browser=cookie_browser or COOKIE_BROWSER,
                 )
             else:
                 command = [
@@ -3292,10 +3435,16 @@ def create_parser() -> argparse.ArgumentParser:
         "-o", "--output-dir", type=Path, default=OUTPUT_DEFAULT, help="download folder"
     )
     download_parser.add_argument(
-        "--firefox-profile", help="Firefox profile name or path (default: Firefox's default profile)"
+        "--cookie-browser",
+        help="browser to read cookies from (default: the cookie_browser setting, "
+        "Brave)",
     )
     download_parser.add_argument(
-        "--no-cookies", action="store_true", help="do not read cookies from Firefox"
+        "--cookie-profile",
+        help="profile name or path for the cookie browser (default: its default profile)",
+    )
+    download_parser.add_argument(
+        "--no-cookies", action="store_true", help="do not read browser cookies"
     )
     download_parser.add_argument("--play", action="store_true", help="play the downloaded video in mpv")
     download_parser.add_argument("--yt-dlp", help="path to yt-dlp executable")

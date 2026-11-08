@@ -122,6 +122,26 @@ class SettingsTests(unittest.TestCase):
                     load_settings(settings_path).radio_mix_batch_size, 68
                 )
 
+    def test_cookie_browser_defaults_to_brave_and_validates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = Path(temp_dir) / "dlpplayer.json"
+            self.assertEqual(load_settings(settings_path).cookie_browser, "brave")
+
+            settings_path.write_text(
+                '{"cookie_browser": "Firefox"}', encoding="utf-8"
+            )
+            self.assertEqual(
+                load_settings(settings_path).cookie_browser, "firefox"
+            )
+
+            settings_path.write_text(
+                '{"cookie_browser": "  "}', encoding="utf-8"
+            )
+            with patch("sys.stderr"):
+                self.assertEqual(
+                    load_settings(settings_path).cookie_browser, "brave"
+                )
+
 
 class HttpUrlTests(unittest.TestCase):
 
@@ -198,7 +218,7 @@ class HttpUrlTests(unittest.TestCase):
 
 
 class DownloadCommandTests(unittest.TestCase):
-    def test_uses_firefox_cookies_and_local_output(self):
+    def test_uses_brave_cookies_and_local_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             command = build_download_command(
                 "yt-dlp.exe",
@@ -209,20 +229,20 @@ class DownloadCommandTests(unittest.TestCase):
             )
 
         self.assertIn("--cookies-from-browser", command)
-        self.assertIn("firefox", command)
+        self.assertIn("brave", command)
         self.assertIn("--ffmpeg-location", command)
         self.assertIn("--print-to-file", command)
         self.assertIn("https://www.bilibili.com/video/BV123", command)
         self.assertIn(temp_dir, command)
         self.assertEqual(command[command.index("-f") + 1], VIDEO_FORMAT_DEFAULT)
 
-    def test_can_skip_cookies_and_choose_firefox_profile(self):
+    def test_can_skip_cookies_and_choose_cookie_profile(self):
         command = build_download_command(
             "yt-dlp.exe",
             "ffmpeg",
             Path("downloads"),
             "https://www.bilibili.com/video/BV123",
-            firefox_profile="default-release",
+            cookie_profile="Profile 1",
             use_cookies=False,
         )
         self.assertNotIn("--cookies-from-browser", command)
@@ -232,10 +252,21 @@ class DownloadCommandTests(unittest.TestCase):
             "ffmpeg",
             Path("downloads"),
             "https://www.bilibili.com/video/BV123",
-            firefox_profile="default-release",
+            cookie_profile="Profile 1",
         )
         cookie_index = command.index("--cookies-from-browser")
-        self.assertEqual(command[cookie_index + 1], "firefox:default-release")
+        self.assertEqual(command[cookie_index + 1], "brave:Profile 1")
+
+    def test_cookie_browser_override(self):
+        command = build_download_command(
+            "yt-dlp.exe",
+            "ffmpeg",
+            Path("downloads"),
+            "https://www.bilibili.com/video/BV123",
+            cookie_browser="firefox",
+        )
+        cookie_index = command.index("--cookies-from-browser")
+        self.assertEqual(command[cookie_index + 1], "firefox")
 
     def test_youtube_command_uses_node_and_custom_format(self):
         command = build_download_command(
@@ -255,7 +286,7 @@ class DownloadCommandTests(unittest.TestCase):
 
 
 class YtDlpCookieFallbackTests(unittest.TestCase):
-    def test_retries_firefox_chrome_then_edge(self):
+    def test_retries_brave_firefox_chrome_then_edge(self):
         command = [
             "yt-dlp.exe",
             "--cookies-from-browser",
@@ -267,7 +298,7 @@ class YtDlpCookieFallbackTests(unittest.TestCase):
         with patch.object(
             dlpplayer.subprocess,
             "run",
-            side_effect=[failure, failure, success],
+            side_effect=[failure, failure, failure, success],
         ) as run:
             result = dlpplayer._run_ytdlp_with_browser_fallback(command)
 
@@ -277,8 +308,30 @@ class YtDlpCookieFallbackTests(unittest.TestCase):
         ]
         self.assertIs(result, success)
         self.assertEqual(
-            attempted_sources, ["firefox:default-release", "chrome", "edge"]
+            attempted_sources,
+            ["firefox:default-release", "brave", "chrome", "edge"],
         )
+
+    def test_returns_configured_browser_error_when_all_attempts_fail(self):
+        command = [
+            "yt-dlp.exe",
+            "--cookies-from-browser",
+            "brave",
+            "https://www.youtube.com/watch?v=video",
+        ]
+        brave_failure = SimpleNamespace(
+            returncode=1,
+            stderr="Could not copy Chrome cookie database.",
+        )
+        other_failure = SimpleNamespace(returncode=1, stderr="browser unavailable")
+        with patch.object(
+            dlpplayer.subprocess,
+            "run",
+            side_effect=[brave_failure, other_failure, other_failure, other_failure],
+        ):
+            result = dlpplayer._run_ytdlp_with_browser_fallback(command)
+
+        self.assertIs(result, brave_failure)
 
     def test_does_not_fallback_when_cookies_are_disabled(self):
         command = ["yt-dlp.exe", "--skip-download", "https://media.example/video"]
@@ -290,6 +343,121 @@ class YtDlpCookieFallbackTests(unittest.TestCase):
 
         self.assertIs(result, failure)
         run.assert_called_once_with(command, check=False)
+
+
+class CookieBrowserDetectionTests(unittest.TestCase):
+    def _brave_root(self, temp_dir: Path) -> Path:
+        root = (
+            temp_dir / "BraveSoftware" / "Brave-Browser" / "User Data"
+        )
+        (root / "Default" / "Network").mkdir(parents=True)
+        (root / "Default" / "Network" / "Cookies").write_bytes(b"")
+        return root
+
+    def _check(self, temp_dir: Path, browser: str, local_state: str) -> bool:
+        root = self._brave_root(temp_dir)
+        (root / "Local State").write_text(local_state, encoding="utf-8")
+        with patch.object(dlpplayer.os, "name", "nt"):
+            with patch.object(
+                dlpplayer.os,
+                "environ",
+                {"LOCALAPPDATA": str(temp_dir), "APPDATA": str(temp_dir)},
+            ):
+                return dlpplayer._cookie_browser_usable(browser)
+
+    def test_app_bound_encryption_makes_chromium_cookies_unusable(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.assertFalse(
+                self._check(
+                    Path(temp_dir),
+                    "brave",
+                    '{"os_crypt":{"app_bound_encrypted_key":"APPB"}}',
+                )
+            )
+
+    def test_chromium_cookies_without_app_bound_encryption_are_usable(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.assertTrue(
+                self._check(
+                    Path(temp_dir),
+                    "brave",
+                    '{"os_crypt":{"encrypted_key":"RFBB"}}',
+                )
+            )
+
+    def test_locked_chromium_cookie_database_is_unusable(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = self._brave_root(Path(temp_dir))
+            (root / "Local State").write_text(
+                '{"os_crypt":{"encrypted_key":"RFBB"}}', encoding="utf-8"
+            )
+            original_open = Path.open
+
+            def locked_open(path, *args, **kwargs):
+                if path.name == "Cookies":
+                    raise PermissionError(13, "locked")
+                return original_open(path, *args, **kwargs)
+
+            with patch.object(dlpplayer.os, "name", "nt"):
+                with patch.object(
+                    dlpplayer.os,
+                    "environ",
+                    {
+                        "LOCALAPPDATA": str(temp_dir),
+                        "APPDATA": str(temp_dir),
+                    },
+                ):
+                    with patch.object(Path, "open", locked_open):
+                        self.assertFalse(
+                            dlpplayer._cookie_browser_usable("brave")
+                        )
+
+    def test_missing_firefox_profiles_are_unusable(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(dlpplayer.os, "name", "nt"):
+                with patch.object(
+                    dlpplayer.os, "environ", {"APPDATA": str(temp_dir)}
+                ):
+                    self.assertFalse(
+                        dlpplayer._cookie_browser_usable("firefox")
+                    )
+
+    def test_usable_browser_skips_unavailable_preferred_browser(self):
+        with patch.object(
+            dlpplayer,
+            "_cookie_browser_usable",
+            side_effect=lambda browser: browser == "chrome",
+        ):
+            self.assertEqual(
+                dlpplayer._usable_cookie_browser("brave"), "chrome"
+            )
+
+    def test_mpv_config_removes_cookies_when_no_browser_is_usable(self):
+        with patch.object(
+            dlpplayer,
+            "_mpv_property_value",
+            side_effect=[
+                {"ytdl_hook-ytdl_path": "yt-dlp.exe"},
+                {"cookies-from-browser": "brave"},
+            ],
+        ):
+            with patch.object(
+                dlpplayer,
+                "_mpv_ipc_request",
+                return_value={"error": "success"},
+            ) as request:
+                configured = dlpplayer._configure_mpv_for_youtube(
+                    r"\\.\pipe\test", "yt-dlp.exe", "node.exe", None
+                )
+
+        self.assertTrue(configured)
+        raw_options = next(
+            call.args[1][2]
+            for call in request.call_args_list
+            if call.args[1][1] == "options/ytdl-raw-options"
+        )
+        self.assertNotIn("cookies-from-browser", raw_options)
+        self.assertEqual(raw_options["js-runtimes"], "node:node.exe")
 
 
 class MpvIpcServerTests(unittest.TestCase):
@@ -500,7 +668,7 @@ class MpvUrlCommandTests(unittest.TestCase):
 
         self.assertEqual(command[-2:], list(urls))
         self.assertIn(
-            "--ytdl-raw-options=cookies-from-browser=firefox,js-runtimes=node:node.exe",
+            "--ytdl-raw-options=cookies-from-browser=brave,js-runtimes=node:node.exe",
             command,
         )
 
@@ -619,7 +787,7 @@ class VideoInfoErrorMessageTests(unittest.TestCase):
 
         self.assertEqual(
             message,
-            "YouTube reports this video is members-only. Check that the Firefox "
+            "YouTube reports this video is members-only. Check that the browser "
             "profile used by DLPPlayer is signed in to an account that has joined "
             "the channel.",
         )
@@ -703,8 +871,8 @@ class VideoInfoCommandTests(unittest.TestCase):
         self.assertIn("--write-comments", command)
         self.assertEqual(comments, (dlpplayer.VideoComment("Top", 8, None),))
 
-    def test_video_info_retries_with_chrome_cookies(self):
-        failure = SimpleNamespace(returncode=1, stderr="Firefox cookies unavailable")
+    def test_video_info_retries_with_firefox_cookies(self):
+        failure = SimpleNamespace(returncode=1, stderr="Brave cookies unavailable")
         success = SimpleNamespace(
             returncode=0,
             stdout='{"title":"Video","vcodec":"h264"}',
@@ -723,7 +891,7 @@ class VideoInfoCommandTests(unittest.TestCase):
                 call.args[0][call.args[0].index("--cookies-from-browser") + 1]
                 for call in run.call_args_list
             ],
-            ["firefox", "chrome"],
+            ["brave", "firefox"],
         )
 
     def test_comment_timeout_does_not_invalidate_video_information(self):
