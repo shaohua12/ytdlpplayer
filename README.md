@@ -123,7 +123,7 @@ Download options:
 - `--play`: send the downloaded file to the shared MPV session after download
   succeeds.
 - `--cookie-browser NAME`: browser to read cookies from for this download;
-  defaults to the `cookie_browser` setting (Brave).
+  defaults to the `cookie_browser` setting (Chrome).
 - `--cookie-profile NAME_OR_PATH`: use this profile for the first cookie
   attempt; the browser's default profile otherwise.
 - `--no-cookies`: do not read browser cookies.
@@ -132,8 +132,8 @@ Download options:
 - `--node PATH`: Node.js executable used by yt-dlp as its JavaScript runtime for
   YouTube downloads. GUI YouTube actions use `DLPPLAYER_NODE` or `node_path`.
 
-Direct yt-dlp requests try the configured browser first, then retry in Brave,
-Firefox, Chrome, and Edge order. MPV cannot retry cookie sources itself, so
+Direct yt-dlp requests try the configured browser first, then retry in Chrome,
+Edge, Firefox, and Brave order. MPV cannot retry cookie sources itself, so
 DLPPlayer gives it the first usable source instead: the configured browser,
 then the same order. A Chromium browser is skipped when its cookie database is
 locked by a running browser or uses app-bound encryption (`v20` cookies), which
@@ -146,8 +146,8 @@ Set it to `null` to remove the height cap. The download `-f` option still
 provides a per-command override.
 
 `cookie_browser` selects the browser yt-dlp and MPV read cookies from; it
-defaults to `brave`. Set it to another yt-dlp browser name such as `firefox`,
-`chrome`, or `edge`. The CLI `--cookie-browser` option overrides it for one
+defaults to `chrome`. Set it to another yt-dlp browser name such as `edge`,
+`firefox`, or `brave`. The CLI `--cookie-browser` option overrides it for one
 download, and `--cookie-profile` selects a non-default profile.
 
 Tool locations are configurable with `yt_dlp_path`, `mpv_path`, `ffmpeg_path`,
@@ -166,11 +166,11 @@ loaded at a time; it defaults to `68`. Raise it to show more of the mix in the
 episode list, or lower it to start playback sooner. The episode dropdown grows
 with the list and shows up to 30 rows at once.
 
-For direct yt-dlp calls, cookies from Brave, Firefox, Chrome, or Edge are passed
+For direct yt-dlp calls, cookies from Chrome, Edge, Firefox, or Brave are passed
 directly to yt-dlp; this project does not export, copy, or store cookie databases.
 Keep browser profiles private and do not share them. On Windows, yt-dlp cannot
 copy a Chromium cookie database while its browser is running and reports
-"Could not copy Chrome cookie database"; close Brave (or the selected browser)
+"Could not copy Chrome cookie database"; close Chrome (or the selected browser)
 before downloading when cookies are required.
 
 Only download videos you own or are authorized to save.

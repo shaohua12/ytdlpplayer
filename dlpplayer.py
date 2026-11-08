@@ -36,8 +36,9 @@ DEFAULT_RADIO_MIX_BATCH_SIZE = 68
 
 YOUTUBE_COMMENT_FETCH_LIMIT = 100
 YOUTUBE_COMMENT_FETCH_TIMEOUT = 120
-DEFAULT_COOKIE_BROWSER = "brave"
-YTDLP_COOKIE_BROWSER_ORDER = ("brave", "firefox", "chrome", "edge")
+DEFAULT_COOKIE_BROWSER = "chrome"
+# Ordered by desktop browser market share (StatCounter, October 2026).
+YTDLP_COOKIE_BROWSER_ORDER = ("chrome", "edge", "firefox", "brave")
 CHROMIUM_USER_DATA_SUBDIRS = {
     "brave": ("BraveSoftware", "Brave-Browser", "User Data"),
     "chrome": ("Google", "Chrome", "User Data"),

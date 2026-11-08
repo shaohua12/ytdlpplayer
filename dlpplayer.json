@@ -1,6 +1,6 @@
 {
   "max_allowed_resolution": 1080,
-  "cookie_browser": "brave",
+  "cookie_browser": "chrome",
   "yt_dlp_path": "C:\\bin\\mpv\\yt-dlp.exe",
   "mpv_path": "C:\\bin\\mpv\\mpv.exe",
   "ffmpeg_path": "C:\\bin\\ffmpeg\\bin",

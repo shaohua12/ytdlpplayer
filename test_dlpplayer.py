@@ -122,10 +122,10 @@ class SettingsTests(unittest.TestCase):
                     load_settings(settings_path).radio_mix_batch_size, 68
                 )
 
-    def test_cookie_browser_defaults_to_brave_and_validates(self):
+    def test_cookie_browser_defaults_to_chrome_and_validates(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             settings_path = Path(temp_dir) / "dlpplayer.json"
-            self.assertEqual(load_settings(settings_path).cookie_browser, "brave")
+            self.assertEqual(load_settings(settings_path).cookie_browser, "chrome")
 
             settings_path.write_text(
                 '{"cookie_browser": "Firefox"}', encoding="utf-8"
@@ -139,7 +139,7 @@ class SettingsTests(unittest.TestCase):
             )
             with patch("sys.stderr"):
                 self.assertEqual(
-                    load_settings(settings_path).cookie_browser, "brave"
+                    load_settings(settings_path).cookie_browser, "chrome"
                 )
 
 
@@ -218,7 +218,7 @@ class HttpUrlTests(unittest.TestCase):
 
 
 class DownloadCommandTests(unittest.TestCase):
-    def test_uses_brave_cookies_and_local_output(self):
+    def test_uses_chrome_cookies_and_local_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             command = build_download_command(
                 "yt-dlp.exe",
@@ -229,7 +229,7 @@ class DownloadCommandTests(unittest.TestCase):
             )
 
         self.assertIn("--cookies-from-browser", command)
-        self.assertIn("brave", command)
+        self.assertIn("chrome", command)
         self.assertIn("--ffmpeg-location", command)
         self.assertIn("--print-to-file", command)
         self.assertIn("https://www.bilibili.com/video/BV123", command)
@@ -255,7 +255,7 @@ class DownloadCommandTests(unittest.TestCase):
             cookie_profile="Profile 1",
         )
         cookie_index = command.index("--cookies-from-browser")
-        self.assertEqual(command[cookie_index + 1], "brave:Profile 1")
+        self.assertEqual(command[cookie_index + 1], "chrome:Profile 1")
 
     def test_cookie_browser_override(self):
         command = build_download_command(
@@ -286,7 +286,7 @@ class DownloadCommandTests(unittest.TestCase):
 
 
 class YtDlpCookieFallbackTests(unittest.TestCase):
-    def test_retries_brave_firefox_chrome_then_edge(self):
+    def test_retries_chrome_edge_firefox_then_brave(self):
         command = [
             "yt-dlp.exe",
             "--cookies-from-browser",
@@ -309,7 +309,7 @@ class YtDlpCookieFallbackTests(unittest.TestCase):
         self.assertIs(result, success)
         self.assertEqual(
             attempted_sources,
-            ["firefox:default-release", "brave", "chrome", "edge"],
+            ["firefox:default-release", "chrome", "edge", "brave"],
         )
 
     def test_returns_configured_browser_error_when_all_attempts_fail(self):
@@ -668,7 +668,7 @@ class MpvUrlCommandTests(unittest.TestCase):
 
         self.assertEqual(command[-2:], list(urls))
         self.assertIn(
-            "--ytdl-raw-options=cookies-from-browser=brave,js-runtimes=node:node.exe",
+            "--ytdl-raw-options=cookies-from-browser=chrome,js-runtimes=node:node.exe",
             command,
         )
 
@@ -871,8 +871,8 @@ class VideoInfoCommandTests(unittest.TestCase):
         self.assertIn("--write-comments", command)
         self.assertEqual(comments, (dlpplayer.VideoComment("Top", 8, None),))
 
-    def test_video_info_retries_with_firefox_cookies(self):
-        failure = SimpleNamespace(returncode=1, stderr="Brave cookies unavailable")
+    def test_video_info_retries_with_edge_cookies(self):
+        failure = SimpleNamespace(returncode=1, stderr="Chrome cookies unavailable")
         success = SimpleNamespace(
             returncode=0,
             stdout='{"title":"Video","vcodec":"h264"}',
@@ -891,7 +891,7 @@ class VideoInfoCommandTests(unittest.TestCase):
                 call.args[0][call.args[0].index("--cookies-from-browser") + 1]
                 for call in run.call_args_list
             ],
-            ["brave", "firefox"],
+            ["chrome", "edge"],
         )
 
     def test_comment_timeout_does_not_invalidate_video_information(self):
