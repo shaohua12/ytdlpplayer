@@ -837,6 +837,23 @@ def _playback_duration(status: str) -> str | None:
     return duration if separator and duration else None
 
 
+def _fit_text_to_width(
+    text: str, measure: Callable[[str], float], max_width: int
+) -> str:
+    if max_width <= 0:
+        return ""
+    if measure(text) <= max_width:
+        return text
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if measure(text[:middle].rstrip() + "...") <= max_width:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low].rstrip() + "..." if low else ""
+
+
 def build_video_info_command(
     yt_dlp: str,
     url: str,
@@ -2126,7 +2143,7 @@ def play(args: argparse.Namespace) -> int:
 def launch_gui(_args: argparse.Namespace | None = None) -> int:
     try:
         import tkinter as tk
-        from tkinter import filedialog, messagebox, scrolledtext, ttk
+        from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
         from tkinterdnd2 import DND_ALL, TkinterDnD
     except ImportError as error:
@@ -3419,8 +3436,44 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     stop_button.configure(command=stop_playback)
     status_row = ttk.Frame(frame)
     status_row.pack(fill="x", pady=(10, 0))
-    status_label = ttk.Label(status_row, wraplength=380)
+    status_label = ttk.Label(status_row)
     status_label.pack(side="left", fill="x", expand=True)
+    status_font = tkfont.Font(
+        root, font=ttk.Style(root).lookup("TLabel", "font") or "TkDefaultFont"
+    )
+    status_full_text = ""
+    status_display_text = ""
+
+    def fit_status_text() -> None:
+        nonlocal status_display_text
+        row_width = status_row.winfo_width()
+        if row_width <= 1:
+            return
+        reserved_width = sum(
+            widget.winfo_reqwidth() + 8
+            for widget in (progress_frame, duration_label)
+            if widget.winfo_manager()
+        )
+        available_width = min(
+            status_label.winfo_width(), row_width - reserved_width
+        ) - 4
+        if available_width <= 1:
+            fitted = ""
+        else:
+            fitted = _fit_text_to_width(
+                status_full_text, status_font.measure, available_width
+            )
+        if fitted != status_display_text:
+            status_display_text = fitted
+            status_label.configure(text=fitted)
+
+    def set_status_text(text: str) -> None:
+        nonlocal status_full_text
+        status_full_text = text
+        fit_status_text()
+
+    status_label.bind("<Configure>", lambda _event: fit_status_text())
+    status_label.bind("<Map>", lambda _event: fit_status_text())
     progress_frame = ttk.Frame(status_row)
     progress_bar = ttk.Progressbar(
         progress_frame,
@@ -3438,12 +3491,12 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         current_status = status.get()
         progress = _playback_progress_display(current_status)
         if progress is None:
-            status_label.configure(text=current_status)
+            set_status_text(current_status)
             progress_frame.pack_forget()
             duration_label.pack_forget()
             return
         status_text, percentage = progress
-        status_label.configure(text=status_text)
+        set_status_text(status_text)
         progress_bar.configure(value=percentage)
         progress_percentage.configure(text=f"{percentage}%")
         duration = _playback_duration(current_status)

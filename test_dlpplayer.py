@@ -693,6 +693,36 @@ class MpvProgressTests(unittest.TestCase):
         prop.assert_called_once_with("ipc", "idle-active")
 
 
+class StatusTextFitTests(unittest.TestCase):
+    def test_keeps_text_that_fits(self):
+        measure = lambda text: len(text) * 10
+
+        self.assertEqual(
+            dlpplayer._fit_text_to_width("Ready.", measure, 100), "Ready."
+        )
+
+    def test_cuts_text_with_three_dots(self):
+        measure = lambda text: len(text) * 10
+
+        fitted = dlpplayer._fit_text_to_width("abcdefghij", measure, 50)
+
+        self.assertEqual(fitted, "ab...")
+        self.assertLessEqual(measure(fitted), 50)
+
+    def test_drops_trailing_space_before_the_dots(self):
+        measure = lambda text: len(text) * 10
+
+        self.assertEqual(
+            dlpplayer._fit_text_to_width("abc defg", measure, 70), "abc..."
+        )
+
+    def test_returns_nothing_when_the_dots_cannot_fit(self):
+        measure = lambda text: len(text) * 10
+
+        self.assertEqual(dlpplayer._fit_text_to_width("abcdef", measure, 20), "")
+        self.assertEqual(dlpplayer._fit_text_to_width("abcdef", measure, 0), "")
+
+
 class MpvUrlCommandTests(unittest.TestCase):
     def test_builds_command_for_generic_http_url(self):
         url = "https://media.example/watch?id=123"

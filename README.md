@@ -76,6 +76,8 @@ Drag-select any part of the title or metadata and press Ctrl+C to copy it.
 The status bar shows a black play triangle while the mpv process runs and a solid
 black square after it stops. While a video plays, a progress bar with the
 playback percentage appears to the right, followed by the video's total length.
+The status text stays on one line and is cut with `...` when it does not fit the
+window width.
 The panel shows up to 100 available URL comments in descending like-count
 order. Bilibili and YouTube retrieval are capped at 100; other sites are not
 forced to fetch comments. YouTube details appear before the separate comments
