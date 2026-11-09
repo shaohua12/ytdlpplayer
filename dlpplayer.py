@@ -811,6 +811,25 @@ def _mpv_status_text(server: str, fallback_title: str | None = None) -> str | No
     return f"{title} | {progress}" if title else progress
 
 
+def _mpv_lamp_state(status: str | None) -> str:
+    if status == "MPV is ready.":
+        return "stopped"
+    if status is not None:
+        parts = status.split(" | ")
+        if len(parts) >= 2 and parts[-2] == "Paused":
+            return "paused"
+    return "playing"
+
+
+def _set_lamp_state(
+    canvas: object, icons: dict[str, tuple[int, ...]], state: str | None
+) -> None:
+    for icon_state, items in icons.items():
+        item_state = "normal" if icon_state == state else "hidden"
+        for item in items:
+            canvas.itemconfigure(item, state=item_state)
+
+
 def _playback_progress_display(status: str) -> tuple[str, int] | None:
     percent_start = status.rfind(" (")
     if percent_start < 0 or not status.endswith("%)"):
@@ -2608,7 +2627,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         if not stopped and current_player is not None and current_player.poll() is None:
             play_button.configure(state="normal")
             stop_button.configure(state="normal")
-            set_playback_lamp(True, True)
+            set_playback_lamp("playing")
             status.set("Could not reach MPV; it was left open. Try Stop again.")
             return
         if not stopped:
@@ -2616,7 +2635,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         play_button.configure(state="normal")
         stop_button.configure(state="disabled")
         if had_playback:
-            set_playback_lamp(current_player is not None or stopped, False)
+            set_playback_lamp(
+                "stopped" if current_player is not None or stopped else None
+            )
             clear_video_info()
             status.set(
                 "Playback stopped; MPV remains open."
@@ -2626,16 +2647,11 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             if stopped and current_player is None:
                 root.after(2000, check_player, None)
 
-    def set_playback_lamp(available: bool, playing: bool = False) -> None:
-        if not available:
+    def set_playback_lamp(state: str | None) -> None:
+        if state is None:
             lamp_canvas.pack_forget()
             return
-        lamp_canvas.itemconfigure(
-            lamp_playing, state="normal" if playing else "hidden"
-        )
-        lamp_canvas.itemconfigure(
-            lamp_stopped, state="hidden" if playing else "normal"
-        )
+        _set_lamp_state(lamp_canvas, lamp_icons, state)
         lamp_canvas.pack(side="left", before=status_label, padx=(0, 6))
 
     def track_active_playlist(
@@ -2683,8 +2699,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 else None
             )
             if playback_status is not None:
-                idle = playback_status == "MPV is ready."
-                set_playback_lamp(True, not idle)
+                lamp_state = _mpv_lamp_state(playback_status)
+                idle = lamp_state == "stopped"
+                set_playback_lamp(lamp_state)
                 stop_button.configure(state="disabled" if idle else "normal")
                 play_button.configure(state="normal")
                 status.set(
@@ -2695,7 +2712,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 root.after(2000, check_player, None)
                 return
             current_player_ipc_server = None
-            set_playback_lamp(False)
+            set_playback_lamp(None)
             stop_button.configure(state="disabled")
             play_button.configure(state="normal")
             return
@@ -2709,8 +2726,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 if current_player_ipc_server is not None
                 else None
             )
-            idle = playback_status == "MPV is ready."
-            set_playback_lamp(True, not idle)
+            lamp_state = _mpv_lamp_state(playback_status)
+            idle = lamp_state == "stopped"
+            set_playback_lamp(lamp_state)
             stop_button.configure(
                 state="normal" if radio_mix_active else ("disabled" if idle else "normal")
             )
@@ -2735,7 +2753,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
 
         current_player = None
         current_player_ipc_server = None
-        set_playback_lamp(True, False)
+        set_playback_lamp("stopped")
         clear_video_info()
         if radio_mix_active and player.returncode == 0:
             status.set("Mix batch finished; loading the next batch...")
@@ -2755,7 +2773,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     def start_playback(url: str, display_url: str) -> bool:
         nonlocal current_player, current_player_ipc_server, playlist_playing_url
         playlist_playing_url = None
-        set_playback_lamp(False)
+        set_playback_lamp(None)
         clear_video_info()
         if not is_http_url(url):
             status.set("Please use a valid HTTP(S) URL.")
@@ -2802,7 +2820,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 current_player_ipc_server, ["loadfile", url, "replace"]
             ):
                 stop_button.configure(state="normal")
-                set_playback_lamp(True, True)
+                set_playback_lamp("playing")
                 if _youtube_playlist_url(url) is None:
                     track_active_playlist(
                         (PlaylistEpisode("Video", url),), request_info=False
@@ -2817,7 +2835,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                     root.after(2000, check_player, None)
                 return True
         if current_player is not None and current_player.poll() is None:
-            set_playback_lamp(True, True)
+            set_playback_lamp("playing")
             status.set("Could not reach the current MPV player; leaving it open.")
             return False
         stop_current_player()
@@ -2852,7 +2870,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         current_player = player
         current_player_ipc_server = ipc_server
         stop_button.configure(state="normal")
-        set_playback_lamp(True, player.poll() is None)
+        set_playback_lamp("playing" if player.poll() is None else "stopped")
         if _youtube_playlist_url(url) is None:
             track_active_playlist(
                 (PlaylistEpisode("Video", url),), request_info=False
@@ -2953,7 +2971,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                     display_url if is_http_url(display_url) else None
                 )
                 episode_combo.current(start_index)
-                set_playback_lamp(True, True)
+                set_playback_lamp("playing")
                 url_entry.delete(0, tk.END)
                 url_entry.insert(0, display_url)
                 clear_video_info()
@@ -2967,12 +2985,12 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 return
 
         if current_player is not None and current_player.poll() is None:
-            set_playback_lamp(True, True)
+            set_playback_lamp("playing")
             status.set("Could not switch episodes; the current MPV player was left open.")
             return
         stop_current_player()
         playlist_playing_url = None
-        set_playback_lamp(False)
+        set_playback_lamp(None)
         clear_video_info()
         status.set("Starting playlist in mpv...")
         root.update_idletasks()
@@ -3019,7 +3037,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             display_url if is_http_url(display_url) else None
         )
         episode_combo.current(start_index)
-        set_playback_lamp(True, player.poll() is None)
+        set_playback_lamp("playing" if player.poll() is None else "stopped")
         url_entry.delete(0, tk.END)
         url_entry.insert(0, display_url)
         track_active_playlist(episodes, offset=start_index, request_info=False)
@@ -3120,7 +3138,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         clear_playlist_selection()
         request_id = playlist_request
         pending_playlist_url = url
-        set_playback_lamp(False)
+        set_playback_lamp(None)
         clear_video_info()
         url_entry.delete(0, tk.END)
         url_entry.insert(0, url)
@@ -3308,7 +3326,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     def play_local_files(paths: tuple[Path, ...]) -> None:
         nonlocal current_player, current_player_ipc_server, loaded_playlist_path
         clear_playlist_selection()
-        set_playback_lamp(False)
+        set_playback_lamp(None)
         clear_video_info()
         missing_path = next((path for path in paths if not path.is_file()), None)
         if missing_path is not None:
@@ -3352,7 +3370,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 reused = False
             if reused:
                 stop_button.configure(state="normal")
-                set_playback_lamp(True, True)
+                set_playback_lamp("playing")
                 track_active_playlist(local_episodes, request_info=False)
                 first_file = paths[0].resolve()
                 request_video_info(
@@ -3365,7 +3383,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                     root.after(2000, check_player, None)
                 return
         if current_player is not None and current_player.poll() is None:
-            set_playback_lamp(True, True)
+            set_playback_lamp("playing")
             status.set("Could not reach the current MPV player; leaving it open.")
             return
         stop_current_player()
@@ -3389,7 +3407,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         current_player = player
         current_player_ipc_server = ipc_server
         stop_button.configure(state="normal")
-        set_playback_lamp(True, player.poll() is None)
+        set_playback_lamp("playing" if player.poll() is None else "stopped")
         track_active_playlist(local_episodes, request_info=False)
         first_file = paths[0].resolve()
         request_video_info(
@@ -3526,9 +3544,20 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     lamp_playing = lamp_canvas.create_polygon(
         4, 3, 15, 9, 4, 15, fill="#000000", outline="#000000", state="hidden"
     )
+    lamp_paused_left = lamp_canvas.create_rectangle(
+        5, 3, 8, 15, fill="#000000", outline="#000000", state="hidden"
+    )
+    lamp_paused_right = lamp_canvas.create_rectangle(
+        10, 3, 13, 15, fill="#000000", outline="#000000", state="hidden"
+    )
     lamp_stopped = lamp_canvas.create_rectangle(
         4, 4, 14, 14, fill="#000000", outline="#000000", state="hidden"
     )
+    lamp_icons = {
+        "playing": (lamp_playing,),
+        "paused": (lamp_paused_left, lamp_paused_right),
+        "stopped": (lamp_stopped,),
+    }
     root.after(100, poll_playlist_results)
     root.after(100, poll_radio_mix_results)
     root.mainloop()

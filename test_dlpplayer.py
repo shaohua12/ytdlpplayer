@@ -693,6 +693,52 @@ class MpvProgressTests(unittest.TestCase):
         prop.assert_called_once_with("ipc", "idle-active")
 
 
+class MpvLampTests(unittest.TestCase):
+    def test_reads_playing_status(self):
+        self.assertEqual(
+            dlpplayer._mpv_lamp_state("Example | Playing | 1:05 / 5:00 (22%)"),
+            "playing",
+        )
+
+    def test_reads_paused_status(self):
+        for status in (
+            "Example | Paused | 1:05 / 5:00 (22%)",
+            "Paused | loading media...",
+            "Paused | 1:05",
+            "A | B | Paused | 1:05 / 5:00 (22%)",
+        ):
+            with self.subTest(status=status):
+                self.assertEqual(dlpplayer._mpv_lamp_state(status), "paused")
+
+    def test_reads_idle_player_as_stopped(self):
+        self.assertEqual(dlpplayer._mpv_lamp_state("MPV is ready."), "stopped")
+
+    def test_defaults_to_playing_without_status(self):
+        self.assertEqual(dlpplayer._mpv_lamp_state(None), "playing")
+
+    def test_shows_only_the_requested_icon(self):
+        class RecordingCanvas:
+            def __init__(self):
+                self.states = {}
+
+            def itemconfigure(self, item, **options):
+                self.states[item] = options["state"]
+
+        icons = {"playing": (1,), "paused": (2, 3), "stopped": (4,)}
+
+        canvas = RecordingCanvas()
+        dlpplayer._set_lamp_state(canvas, icons, "paused")
+        self.assertEqual(
+            canvas.states, {1: "hidden", 2: "normal", 3: "normal", 4: "hidden"}
+        )
+
+        canvas = RecordingCanvas()
+        dlpplayer._set_lamp_state(canvas, icons, None)
+        self.assertEqual(
+            canvas.states, {1: "hidden", 2: "hidden", 3: "hidden", 4: "hidden"}
+        )
+
+
 class StatusTextFitTests(unittest.TestCase):
     def test_keeps_text_that_fits(self):
         measure = lambda text: len(text) * 10
