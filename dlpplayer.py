@@ -32,6 +32,11 @@ NODE_DEFAULT = Path(r"D:\bin\nodejs\node.exe")
 DEFAULT_MAX_ALLOWED_RESOLUTION = 1080
 SETTINGS_PATH = Path(__file__).resolve().with_name("dlpplayer.json")
 DEFAULT_RADIO_MIX_BATCH_SIZE = 68
+YTDLP_SUBTITLE_OPTIONS = (
+    ("sub-langs", "en.*"),
+    ("write-subs", ""),
+    ("write-auto-subs", ""),
+)
 
 
 YOUTUBE_COMMENT_FETCH_LIMIT = 100
@@ -420,6 +425,7 @@ def _build_mpv_playlist_command(
     command = [
         mpv,
         "--pause=no",
+        "--slang=en,en-US,en-GB",
         f"--script-opts=ytdl_hook-ytdl_path={yt_dlp}",
         f"--ytdl-format={VIDEO_FORMAT_DEFAULT}",
     ]
@@ -427,7 +433,9 @@ def _build_mpv_playlist_command(
         command.extend(["--idle=yes", "--force-window=yes"])
     if ipc_server:
         command.append(f"--input-ipc-server={ipc_server}")
-    raw_options = []
+    raw_options = [
+        f"{name}={value}" for name, value in YTDLP_SUBTITLE_OPTIONS
+    ]
     if use_cookies:
         raw_options.append(
             "cookies-from-browser="
@@ -673,14 +681,17 @@ def _configure_mpv_for_youtube(
 
     raw_options = _mpv_property_value(server, "options/ytdl-raw-options")
     raw_options = dict(raw_options) if isinstance(raw_options, dict) else {}
+    raw_options.pop("en,write-subs", None)
     if cookie_browser:
         raw_options["cookies-from-browser"] = cookie_browser
     else:
         raw_options.pop("cookies-from-browser", None)
     raw_options["js-runtimes"] = f"node:{node_runtime}"
+    raw_options.update(YTDLP_SUBTITLE_OPTIONS)
 
     for property_name, value in (
         ("options/script-opts", script_options),
+        ("options/slang", ["en", "en-US", "en-GB"]),
         ("options/ytdl-format", VIDEO_FORMAT_DEFAULT),
         ("options/ytdl-raw-options", raw_options),
     ):

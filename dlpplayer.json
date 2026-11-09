@@ -1,10 +1,10 @@
 {
-  "max_allowed_resolution": 1080,
+  "max_allowed_resolution": 480,
   "cookie_browser": "chrome",
-  "yt_dlp_path": "C:\\bin\\mpv\\yt-dlp.exe",
-  "mpv_path": "C:\\bin\\mpv\\mpv.exe",
-  "ffmpeg_path": "C:\\bin\\ffmpeg\\bin",
-  "node_path": "C:\\bin\\nodejs\\node.exe",
+  "yt_dlp_path": "D:\\bin\\mpv\\yt-dlp.exe",
+  "mpv_path": "D:\\bin\\mpv\\mpv.exe",
+  "ffmpeg_path": "D:\\bin\\ffmpeg\\bin",
+  "node_path": "D:\\bin\\nodejs\\node.exe",
   "radio_mix_batch_size": 68,
   "python_library_path": null
 }

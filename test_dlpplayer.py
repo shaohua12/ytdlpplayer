@@ -65,7 +65,7 @@ class SettingsTests(unittest.TestCase):
                 settings = load_settings(settings_path)
 
         self.assertEqual(settings.max_allowed_resolution, 1080)
-        self.assertEqual(settings.video_format, VIDEO_FORMAT_DEFAULT)
+        self.assertEqual(settings.video_format, dlpplayer.AppSettings().video_format)
 
     def test_reads_relative_tool_and_python_library_paths(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -438,7 +438,10 @@ class CookieBrowserDetectionTests(unittest.TestCase):
             "_mpv_property_value",
             side_effect=[
                 {"ytdl_hook-ytdl_path": "yt-dlp.exe"},
-                {"cookies-from-browser": "brave"},
+                {
+                    "cookies-from-browser": "brave",
+                    "en,write-subs": "",
+                },
             ],
         ):
             with patch.object(
@@ -457,7 +460,15 @@ class CookieBrowserDetectionTests(unittest.TestCase):
             if call.args[1][1] == "options/ytdl-raw-options"
         )
         self.assertNotIn("cookies-from-browser", raw_options)
+        self.assertNotIn("en,write-subs", raw_options)
         self.assertEqual(raw_options["js-runtimes"], "node:node.exe")
+        self.assertEqual(raw_options["sub-langs"], "en.*")
+        self.assertIn("write-subs", raw_options)
+        self.assertIn("write-auto-subs", raw_options)
+        self.assertIn(
+            ["set_property", "options/slang", ["en", "en-US", "en-GB"]],
+            [call.args[1] for call in request.call_args_list],
+        )
 
 
 class MpvIpcServerTests(unittest.TestCase):
@@ -600,7 +611,16 @@ class MpvUrlCommandTests(unittest.TestCase):
         )
 
         self.assertEqual(command[-1], url)
+        self.assertIn("--slang=en,en-US,en-GB", command)
         self.assertIn(f"--ytdl-format={VIDEO_FORMAT_DEFAULT}", command)
+        raw_options = next(
+            item.removeprefix("--ytdl-raw-options=")
+            for item in command
+            if item.startswith("--ytdl-raw-options=")
+        )
+        self.assertIn("sub-langs=en.*", raw_options)
+        self.assertIn("write-subs=", raw_options)
+        self.assertIn("write-auto-subs=", raw_options)
         self.assertFalse(any("js-runtimes" in item for item in command))
 
     def test_builds_mpv_command_with_ipc_server(self):
@@ -668,7 +688,9 @@ class MpvUrlCommandTests(unittest.TestCase):
 
         self.assertEqual(command[-2:], list(urls))
         self.assertIn(
-            "--ytdl-raw-options=cookies-from-browser=chrome,js-runtimes=node:node.exe",
+            "--ytdl-raw-options=sub-langs=en.*,write-subs=,"
+            "write-auto-subs=,cookies-from-browser=chrome,"
+            "js-runtimes=node:node.exe",
             command,
         )
 
