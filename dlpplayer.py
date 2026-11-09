@@ -811,6 +811,15 @@ def _mpv_status_text(server: str, fallback_title: str | None = None) -> str | No
     return f"{title} | {progress}" if title else progress
 
 
+def _toggle_mpv_pause(server: str) -> str | None:
+    if _mpv_property_value(server, "idle-active") is not False:
+        return None
+    paused = _mpv_property_value(server, "pause") is True
+    if not _send_mpv_ipc_command(server, ["cycle", "pause"]):
+        return None
+    return "playing" if paused else "paused"
+
+
 def _mpv_lamp_state(status: str | None) -> str:
     if status == "MPV is ready.":
         return "stopped"
@@ -2711,10 +2720,23 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 )
                 root.after(2000, check_player, None)
                 return
+            if (
+                ipc_server is not None
+                and _mpv_property_value(ipc_server, "pid") is not None
+            ):
+                # MPV is alive but has no playback status yet.
+                set_playback_lamp(None)
+                stop_button.configure(state="disabled")
+                play_button.configure(state="normal")
+                root.after(2000, check_player, None)
+                return
             current_player_ipc_server = None
-            set_playback_lamp(None)
+            radio_mix_active = False
+            set_playback_lamp("stopped")
+            clear_video_info()
             stop_button.configure(state="disabled")
             play_button.configure(state="normal")
+            status.set("mpv closed.")
             return
         if player.poll() is None:
             update_current_episode_info()
@@ -3558,6 +3580,17 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         "paused": (lamp_paused_left, lamp_paused_right),
         "stopped": (lamp_stopped,),
     }
+
+    def toggle_playback(_event: object | None = None) -> None:
+        server = current_player_ipc_server
+        if server is None:
+            return
+        state = _toggle_mpv_pause(server)
+        if state is not None:
+            set_playback_lamp(state)
+
+    lamp_canvas.configure(cursor="hand2")
+    lamp_canvas.bind("<Button-1>", toggle_playback)
     root.after(100, poll_playlist_results)
     root.after(100, poll_radio_mix_results)
     root.mainloop()

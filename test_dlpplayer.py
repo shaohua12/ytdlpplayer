@@ -693,6 +693,51 @@ class MpvProgressTests(unittest.TestCase):
         prop.assert_called_once_with("ipc", "idle-active")
 
 
+class MpvPauseToggleTests(unittest.TestCase):
+    def test_pauses_a_playing_video(self):
+        with (
+            patch.object(
+                dlpplayer, "_mpv_property_value", side_effect=[False, False]
+            ) as prop,
+            patch.object(
+                dlpplayer, "_send_mpv_ipc_command", return_value=True
+            ) as send,
+        ):
+            state = dlpplayer._toggle_mpv_pause("ipc")
+
+        self.assertEqual(state, "paused")
+        self.assertEqual(
+            [call.args for call in prop.call_args_list],
+            [("ipc", "idle-active"), ("ipc", "pause")],
+        )
+        send.assert_called_once_with("ipc", ["cycle", "pause"])
+
+    def test_resumes_a_paused_video(self):
+        with (
+            patch.object(
+                dlpplayer, "_mpv_property_value", side_effect=[False, True]
+            ),
+            patch.object(dlpplayer, "_send_mpv_ipc_command", return_value=True),
+        ):
+            self.assertEqual(dlpplayer._toggle_mpv_pause("ipc"), "playing")
+
+    def test_ignores_an_idle_player(self):
+        with (
+            patch.object(dlpplayer, "_mpv_property_value", return_value=True),
+            patch.object(dlpplayer, "_send_mpv_ipc_command") as send,
+        ):
+            self.assertIsNone(dlpplayer._toggle_mpv_pause("ipc"))
+
+        send.assert_not_called()
+
+    def test_reports_nothing_when_the_command_fails(self):
+        with (
+            patch.object(dlpplayer, "_mpv_property_value", return_value=False),
+            patch.object(dlpplayer, "_send_mpv_ipc_command", return_value=False),
+        ):
+            self.assertIsNone(dlpplayer._toggle_mpv_pause("ipc"))
+
+
 class MpvLampTests(unittest.TestCase):
     def test_reads_playing_status(self):
         self.assertEqual(

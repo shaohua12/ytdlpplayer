@@ -75,6 +75,7 @@ The information panel shows the video title prominently and hides when mpv exits
 Drag-select any part of the title or metadata and press Ctrl+C to copy it.
 The status bar starts with a playback icon: a black play triangle while playing,
 two pause bars while paused, and a solid black square when stopped or idle.
+Click the icon to pause or resume the current video.
 While a video plays, a progress bar with the playback percentage appears to the
 right, followed by the video's total length.
 The status text stays on one line and is cut with `...` when it does not fit the
