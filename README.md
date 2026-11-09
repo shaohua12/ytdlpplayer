@@ -16,14 +16,15 @@ set:
 - **FFmpeg** is required for downloads, including merging separate audio/video
   streams. Its companion `ffprobe` (usually included in FFmpeg builds) reads
   local-file media details.
-- **Node.js** is required for YouTube URL playback, inspection, and downloads.
-  DLPPlayer uses it as yt-dlp's JavaScript runtime; other sites and local files
-  do not need it.
+- **Node.js** is used as yt-dlp's JavaScript runtime for YouTube when the
+  installed yt-dlp supports `--js-runtimes`. DLPPlayer detects support and
+  omits the option on older yt-dlp builds; update yt-dlp when YouTube extraction
+  needs JavaScript challenge support.
 
-Local-file playback needs only mpv. URL playback needs mpv and yt-dlp; YouTube
-URLs also need Node.js. Downloads need yt-dlp and FFmpeg; YouTube downloads also
-need Node.js. DLPPlayer checks its configured tool locations and then
-`PATH`; see the tool-location settings below to configure paths.
+Local-file playback needs only mpv. URL playback needs mpv and yt-dlp. YouTube
+playback and downloads use Node.js when yt-dlp supports `--js-runtimes`.
+Downloads need yt-dlp and FFmpeg. DLPPlayer checks its configured tool locations
+and then `PATH`; see the tool-location settings below to configure paths.
 
 Install the GUI dependency once:
 
@@ -73,8 +74,8 @@ The window title prompts "Drop a video, playlist, or link."
 The information panel shows the video title prominently and hides when mpv exits.
 Drag-select any part of the title or metadata and press Ctrl+C to copy it.
 The status bar shows a black play triangle while the mpv process runs and a solid
-black square after it stops. During playback, elapsed time is replaced by a small
-progress bar with the percentage overlaid.
+black square after it stops. While a video plays, a progress bar with the
+playback percentage appears to the right, followed by the video's total length.
 The panel shows up to 100 available URL comments in descending like-count
 order. Bilibili and YouTube retrieval are capped at 100; other sites are not
 forced to fetch comments. YouTube details appear before the separate comments
@@ -129,8 +130,8 @@ Download options:
 - `--no-cookies`: do not read browser cookies.
 - `--yt-dlp PATH`, `--ffmpeg PATH`, `--mpv PATH`: override tool locations;
   `--ffmpeg` may be an executable or its containing directory.
-- `--node PATH`: Node.js executable used by yt-dlp as its JavaScript runtime for
-  YouTube downloads. GUI YouTube actions use `DLPPLAYER_NODE` or `node_path`.
+- `--node PATH`: Node.js executable passed to yt-dlp when it supports
+  `--js-runtimes`. GUI YouTube actions use `DLPPLAYER_NODE` or `node_path`.
 
 Direct yt-dlp requests try the configured browser first, then retry in Chrome,
 Edge, Firefox, and Brave order. MPV cannot retry cookie sources itself, so

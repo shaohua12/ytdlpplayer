@@ -1,5 +1,5 @@
 {
-  "max_allowed_resolution": 480,
+  "max_allowed_resolution": 1080,
   "cookie_browser": "chrome",
   "yt_dlp_path": "D:\\bin\\mpv\\yt-dlp.exe",
   "mpv_path": "D:\\bin\\mpv\\mpv.exe",

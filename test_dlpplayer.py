@@ -217,6 +217,85 @@ class HttpUrlTests(unittest.TestCase):
         launch.assert_called_once_with()
 
 
+class YtDlpRuntimeCompatibilityTests(unittest.TestCase):
+    def _resolve_ytdlp(self, temp_dir: Path, help_text: str) -> str:
+        executable = temp_dir / "yt-dlp.exe"
+        executable.touch()
+        help_result = SimpleNamespace(
+            returncode=0,
+            stdout=help_text,
+            stderr="",
+        )
+        with patch.object(
+            dlpplayer.subprocess, "run", return_value=help_result
+        ):
+            return dlpplayer.resolve_tool(
+                str(executable), "DLPPLAYER_YTDLP", None, "yt-dlp"
+            )
+
+    def test_older_ytdlp_omits_unsupported_runtime_option(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            yt_dlp = self._resolve_ytdlp(
+                Path(temp_dir), "Usage: yt-dlp [OPTIONS] URL"
+            )
+            url = "https://www.youtube.com/watch?v=video"
+            commands = (
+                dlpplayer.build_download_command(
+                    yt_dlp,
+                    "ffmpeg",
+                    Path("downloads"),
+                    url,
+                    use_cookies=False,
+                    node_runtime="node.exe",
+                ),
+                build_video_info_command(yt_dlp, url, "node.exe"),
+                dlpplayer.build_playlist_command(yt_dlp, url, "node.exe"),
+                dlpplayer.build_episode_metadata_command(yt_dlp, url, "node.exe"),
+            )
+            for command in commands:
+                self.assertNotIn("--js-runtimes", command)
+
+            mpv_command = build_mpv_url_command(
+                "mpv.exe", yt_dlp, url, node_runtime="node.exe", use_cookies=False
+            )
+            self.assertFalse(any("js-runtimes=" in item for item in mpv_command))
+
+            with patch.object(
+                dlpplayer,
+                "_mpv_property_value",
+                side_effect=[{}, {"js-runtimes": "node:node.exe"}],
+            ):
+                with patch.object(
+                    dlpplayer,
+                    "_mpv_ipc_request",
+                    return_value={"error": "success"},
+                ) as request:
+                    configured = dlpplayer._configure_mpv_for_youtube(
+                        r"\\.\pipe\test", yt_dlp, "node.exe"
+                    )
+
+            self.assertTrue(configured)
+            raw_options = next(
+                call.args[1][2]
+                for call in request.call_args_list
+                if call.args[1][1] == "options/ytdl-raw-options"
+            )
+            self.assertNotIn("js-runtimes", raw_options)
+
+    def test_newer_ytdlp_keeps_supported_runtime_option(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            yt_dlp = self._resolve_ytdlp(
+                Path(temp_dir), "--js-runtimes RUNTIME[:PATH]"
+            )
+            command = build_video_info_command(
+                yt_dlp,
+                "https://www.youtube.com/watch?v=video",
+                "node.exe",
+            )
+
+        self.assertIn("--js-runtimes", command)
+
+
 class DownloadCommandTests(unittest.TestCase):
     def test_uses_chrome_cookies_and_local_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -566,6 +645,20 @@ class MpvProgressTests(unittest.TestCase):
         self.assertEqual(
             dlpplayer._format_mpv_progress(65, None, paused=True),
             "Paused | 1:05",
+        )
+
+    def test_extracts_playback_duration(self):
+        self.assertEqual(
+            dlpplayer._playback_duration("Example | Playing | 1:05 / 5:00 (22%)"),
+            "5:00",
+        )
+        self.assertEqual(
+            dlpplayer._playback_duration("Paused | 1:05 / 5:00 (22%)"),
+            "5:00",
+        )
+        self.assertIsNone(dlpplayer._playback_duration("MPV is ready."))
+        self.assertIsNone(
+            dlpplayer._playback_duration("Playing | loading media...")
         )
 
     def test_reads_status_from_mpv_properties(self):

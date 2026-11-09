@@ -332,6 +332,40 @@ def extract_local_paths(
     return tuple(Path(item).expanduser() for item in splitlist(payload) if item)
 
 
+_YTDLP_JS_RUNTIME_SUPPORT: dict[str, bool] = {}
+
+
+def _probe_ytdlp_js_runtime_support(yt_dlp: str) -> None:
+    if yt_dlp in _YTDLP_JS_RUNTIME_SUPPORT:
+        return
+    try:
+        result = subprocess.run(
+            [yt_dlp, "--help"],
+            capture_output=True,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    help_text = f"{result.stdout or ''}\n{result.stderr or ''}"
+    _YTDLP_JS_RUNTIME_SUPPORT[yt_dlp] = "--js-runtimes" in help_text
+
+
+def _yt_dlp_supports_js_runtimes(yt_dlp: str) -> bool:
+    return _YTDLP_JS_RUNTIME_SUPPORT.get(yt_dlp, True)
+
+
+def _resolved_tool_path(path: str | Path, name: str) -> str:
+    resolved = str(path)
+    if name == "yt-dlp":
+        _probe_ytdlp_js_runtime_support(resolved)
+    return resolved
+
+
 def resolve_tool(
     option: str | None,
     environment_name: str,
@@ -343,19 +377,19 @@ def resolve_tool(
     if configured:
         candidate = Path(configured)
         if candidate.is_file() or (allow_directory and candidate.is_dir()):
-            return str(candidate)
+            return _resolved_tool_path(candidate, name)
         located = shutil.which(configured)
         if located:
-            return located
+            return _resolved_tool_path(located, name)
         raise FileNotFoundError(f"{name} was not found at {configured!r}.")
 
     if default is not None and (
         default.is_file() or (allow_directory and default.is_dir())
     ):
-        return str(default)
+        return _resolved_tool_path(default, name)
     located = shutil.which(name)
     if located:
-        return located
+        return _resolved_tool_path(located, name)
     raise FileNotFoundError(
         f"{name} was not found. Install it or pass its path with --{name}."
     )
@@ -392,7 +426,7 @@ def build_download_command(
         "--merge-output-format",
         "mp4",
     ]
-    if is_youtube_url(url):
+    if is_youtube_url(url) and _yt_dlp_supports_js_runtimes(yt_dlp):
         runtime = f"node:{node_runtime}" if node_runtime else "node"
         command.extend(["--js-runtimes", runtime])
     if use_cookies:
@@ -441,7 +475,7 @@ def _build_mpv_playlist_command(
             "cookies-from-browser="
             + _cookie_source(cookie_browser, cookie_profile)
         )
-    if any(is_youtube_url(url) for url in urls):
+    if any(is_youtube_url(url) for url in urls) and _yt_dlp_supports_js_runtimes(yt_dlp):
         runtime = f"node:{node_runtime}" if node_runtime else "node"
         raw_options.append(f"js-runtimes={runtime}")
     if raw_options:
@@ -686,7 +720,9 @@ def _configure_mpv_for_youtube(
         raw_options["cookies-from-browser"] = cookie_browser
     else:
         raw_options.pop("cookies-from-browser", None)
-    raw_options["js-runtimes"] = f"node:{node_runtime}"
+    raw_options.pop("js-runtimes", None)
+    if _yt_dlp_supports_js_runtimes(yt_dlp):
+        raw_options["js-runtimes"] = f"node:{node_runtime}"
     raw_options.update(YTDLP_SUBTITLE_OPTIONS)
 
     for property_name, value in (
@@ -793,6 +829,14 @@ def _playback_progress_display(status: str) -> tuple[str, int] | None:
     return playback_status[:separator].strip(), percentage
 
 
+def _playback_duration(status: str) -> str | None:
+    if _playback_progress_display(status) is None:
+        return None
+    time_range = status.rsplit(" (", 1)[0].rsplit(" | ", 1)[-1]
+    _, separator, duration = time_range.partition(" / ")
+    return duration if separator and duration else None
+
+
 def build_video_info_command(
     yt_dlp: str,
     url: str,
@@ -813,7 +857,7 @@ def build_video_info_command(
         "--cookies-from-browser",
         cookie_browser,
     ]
-    if is_youtube_url(url):
+    if is_youtube_url(url) and _yt_dlp_supports_js_runtimes(yt_dlp):
         runtime = f"node:{node_runtime}" if node_runtime else "node"
         command.extend(["--js-runtimes", runtime])
         if include_comments:
@@ -850,7 +894,7 @@ def _build_playlist_command(
         command.extend(
             ["--yes-playlist", "--playlist-items", f"{start}-{end}"]
         )
-    if is_youtube_url(url):
+    if is_youtube_url(url) and _yt_dlp_supports_js_runtimes(yt_dlp):
         runtime = f"node:{node_runtime}" if node_runtime else "node"
         command.extend(["--js-runtimes", runtime])
     command.append(url)
@@ -884,7 +928,7 @@ def build_episode_metadata_command(
     ]
     if is_http_url(url):
         command.extend(["--cookies-from-browser", cookie_browser])
-    if is_youtube_url(url):
+    if is_youtube_url(url) and _yt_dlp_supports_js_runtimes(yt_dlp):
         runtime = f"node:{node_runtime}" if node_runtime else "node"
         command.extend(["--js-runtimes", runtime])
     command.append(url)
@@ -1780,9 +1824,7 @@ def _load_video_info(
     except Exception:
         return
     if comments:
-        results.put(
-            (request_id, VideoInfo(info.title, info.details, comments), None)
-        )
+        results.put((request_id, VideoInfo(info.title, info.details, comments), None))
 
 
 def _fetch_playlist_episodes(
@@ -3390,6 +3432,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     progress_bar.pack(fill="x", expand=True)
     progress_percentage = ttk.Label(progress_frame, text="", anchor="center")
     progress_percentage.place(relx=0.5, rely=0.5, anchor="center")
+    duration_label = ttk.Label(status_row, anchor="e")
 
     def update_status_display(*_args: str) -> None:
         current_status = status.get()
@@ -3397,11 +3440,19 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         if progress is None:
             status_label.configure(text=current_status)
             progress_frame.pack_forget()
+            duration_label.pack_forget()
             return
         status_text, percentage = progress
         status_label.configure(text=status_text)
         progress_bar.configure(value=percentage)
         progress_percentage.configure(text=f"{percentage}%")
+        duration = _playback_duration(current_status)
+        if duration is None:
+            duration_label.pack_forget()
+        else:
+            duration_label.configure(text=duration)
+            if not duration_label.winfo_manager():
+                duration_label.pack(side="right", padx=(8, 0))
         if not progress_frame.winfo_manager():
             progress_frame.pack(side="right", padx=(8, 0))
 
