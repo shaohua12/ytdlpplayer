@@ -32,11 +32,6 @@ NODE_DEFAULT = Path(r"D:\bin\nodejs\node.exe")
 DEFAULT_MAX_ALLOWED_RESOLUTION = 1080
 SETTINGS_PATH = Path(__file__).resolve().with_name("dlpplayer.json")
 DEFAULT_RADIO_MIX_BATCH_SIZE = 68
-YTDLP_SUBTITLE_OPTIONS = (
-    ("sub-langs", "en.*"),
-    ("write-subs", ""),
-    ("write-auto-subs", ""),
-)
 
 
 YOUTUBE_COMMENT_FETCH_LIMIT = 100
@@ -459,7 +454,6 @@ def _build_mpv_playlist_command(
     command = [
         mpv,
         "--pause=no",
-        "--slang=en,en-US,en-GB",
         f"--script-opts=ytdl_hook-ytdl_path={yt_dlp}",
         f"--ytdl-format={VIDEO_FORMAT_DEFAULT}",
     ]
@@ -467,9 +461,7 @@ def _build_mpv_playlist_command(
         command.extend(["--idle=yes", "--force-window=yes"])
     if ipc_server:
         command.append(f"--input-ipc-server={ipc_server}")
-    raw_options = [
-        f"{name}={value}" for name, value in YTDLP_SUBTITLE_OPTIONS
-    ]
+    raw_options = []
     if use_cookies:
         raw_options.append(
             "cookies-from-browser="
@@ -715,7 +707,6 @@ def _configure_mpv_for_youtube(
 
     raw_options = _mpv_property_value(server, "options/ytdl-raw-options")
     raw_options = dict(raw_options) if isinstance(raw_options, dict) else {}
-    raw_options.pop("en,write-subs", None)
     if cookie_browser:
         raw_options["cookies-from-browser"] = cookie_browser
     else:
@@ -723,11 +714,9 @@ def _configure_mpv_for_youtube(
     raw_options.pop("js-runtimes", None)
     if _yt_dlp_supports_js_runtimes(yt_dlp):
         raw_options["js-runtimes"] = f"node:{node_runtime}"
-    raw_options.update(YTDLP_SUBTITLE_OPTIONS)
 
     for property_name, value in (
         ("options/script-opts", script_options),
-        ("options/slang", ["en", "en-US", "en-GB"]),
         ("options/ytdl-format", VIDEO_FORMAT_DEFAULT),
         ("options/ytdl-raw-options", raw_options),
     ):
@@ -811,6 +800,25 @@ def _mpv_status_text(server: str, fallback_title: str | None = None) -> str | No
     return f"{title} | {progress}" if title else progress
 
 
+def _toggle_mpv_pause(server: str) -> str | None:
+    if _mpv_property_value(server, "idle-active") is not False:
+        return None
+    paused = _mpv_property_value(server, "pause") is True
+    if not _send_mpv_ipc_command(server, ["cycle", "pause"]):
+        return None
+    return "playing" if paused else "paused"
+
+
+def _mpv_lamp_state(status: str | None) -> str:
+    if status == "MPV is ready.":
+        return "stopped"
+    if status is not None:
+        parts = status.split(" | ")
+        if len(parts) >= 2 and parts[-2] == "Paused":
+            return "paused"
+    return "playing"
+
+
 def _playback_progress_display(status: str) -> tuple[str, int] | None:
     percent_start = status.rfind(" (")
     if percent_start < 0 or not status.endswith("%)"):
@@ -854,6 +862,23 @@ def _status_label_text(status: str) -> str:
     ):
         return ""
     return status
+
+
+def _fit_text_to_width(
+    text: str, measure: Callable[[str], float], max_width: int
+) -> str:
+    if max_width <= 0:
+        return ""
+    if measure(text) <= max_width:
+        return text
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if measure(text[:middle].rstrip() + "...") <= max_width:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low].rstrip() + "..." if low else ""
 
 
 def build_video_info_command(
@@ -2145,7 +2170,7 @@ def play(args: argparse.Namespace) -> int:
 def launch_gui(_args: argparse.Namespace | None = None) -> int:
     try:
         import tkinter as tk
-        from tkinter import filedialog, messagebox, scrolledtext, ttk
+        from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
         from tkinterdnd2 import DND_ALL, TkinterDnD
     except ImportError as error:
@@ -2608,7 +2633,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         if not stopped and current_player is not None and current_player.poll() is None:
             play_button.configure(state="normal")
             stop_button.configure(state="normal")
-            set_playback_controls(True, True)
+            set_playback_lamp("playing")
             status.set("Could not reach MPV; it was left open. Try Stop again.")
             return
         if not stopped:
@@ -2616,7 +2641,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         play_button.configure(state="normal")
         stop_button.configure(state="disabled")
         if had_playback:
-            set_playback_controls(current_player is not None or stopped, False)
+            set_playback_lamp(
+                "stopped" if current_player is not None or stopped else None
+            )
             clear_video_info()
             status.set(
                 "Playback stopped; MPV remains open."
@@ -2626,7 +2653,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             if stopped and current_player is None:
                 root.after(2000, check_player, None)
 
-    def set_playback_controls(available: bool, playing: bool = False) -> None:
+    def set_playback_lamp(state: str | None) -> None:
+        available = state is not None
+        playing = state in ("playing", "paused")
         transport_state = "normal" if available and playing else "disabled"
         for button in (
             rewind_button,
@@ -2691,8 +2720,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 else None
             )
             if playback_status is not None:
-                idle = playback_status == "MPV is ready."
-                set_playback_controls(True, not idle)
+                lamp_state = _mpv_lamp_state(playback_status)
+                idle = lamp_state == "stopped"
+                set_playback_lamp(lamp_state)
                 stop_button.configure(state="disabled" if idle else "normal")
                 play_button.configure(state="normal")
                 if not idle:
@@ -2704,10 +2734,23 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 )
                 root.after(2000, check_player, None)
                 return
+            if (
+                ipc_server is not None
+                and _mpv_property_value(ipc_server, "pid") is not None
+            ):
+                # MPV is alive but has no playback status yet.
+                set_playback_lamp(None)
+                stop_button.configure(state="disabled")
+                play_button.configure(state="normal")
+                root.after(2000, check_player, None)
+                return
             current_player_ipc_server = None
-            set_playback_controls(False)
+            radio_mix_active = False
+            set_playback_lamp("stopped")
+            clear_video_info()
             stop_button.configure(state="disabled")
             play_button.configure(state="normal")
+            status.set("mpv closed.")
             return
         if player.poll() is None:
             update_current_episode_info()
@@ -2719,8 +2762,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 if current_player_ipc_server is not None
                 else None
             )
-            idle = playback_status == "MPV is ready."
-            set_playback_controls(True, not idle)
+            lamp_state = _mpv_lamp_state(playback_status)
+            idle = lamp_state == "stopped"
+            set_playback_lamp(lamp_state)
             stop_button.configure(
                 state="normal" if radio_mix_active else ("disabled" if idle else "normal")
             )
@@ -2747,7 +2791,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
 
         current_player = None
         current_player_ipc_server = None
-        set_playback_controls(True, False)
+        set_playback_lamp("stopped")
         clear_video_info()
         if radio_mix_active and player.returncode == 0:
             status.set("Mix batch finished; loading the next batch...")
@@ -2767,7 +2811,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     def start_playback(url: str, display_url: str) -> bool:
         nonlocal current_player, current_player_ipc_server, playlist_playing_url
         playlist_playing_url = None
-        set_playback_controls(False)
+        set_playback_lamp(None)
         clear_video_info()
         if not is_http_url(url):
             status.set("Please use a valid HTTP(S) URL.")
@@ -2814,7 +2858,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 current_player_ipc_server, ["loadfile", url, "replace"]
             ):
                 stop_button.configure(state="normal")
-                set_playback_controls(True, True)
+                set_playback_lamp("playing")
                 if _youtube_playlist_url(url) is None:
                     track_active_playlist(
                         (PlaylistEpisode("Video", url),), request_info=False
@@ -2829,7 +2873,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                     root.after(2000, check_player, None)
                 return True
         if current_player is not None and current_player.poll() is None:
-            set_playback_controls(True, True)
+            set_playback_lamp("playing")
             status.set("Could not reach the current MPV player; leaving it open.")
             return False
         stop_current_player()
@@ -2864,7 +2908,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         current_player = player
         current_player_ipc_server = ipc_server
         stop_button.configure(state="normal")
-        set_playback_controls(True, player.poll() is None)
+        set_playback_lamp("playing" if player.poll() is None else "stopped")
         if _youtube_playlist_url(url) is None:
             track_active_playlist(
                 (PlaylistEpisode("Video", url),), request_info=False
@@ -2965,7 +3009,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                     display_url if is_http_url(display_url) else None
                 )
                 episode_combo.current(start_index)
-                set_playback_controls(True, True)
+                set_playback_lamp("playing")
                 url_entry.delete(0, tk.END)
                 url_entry.insert(0, display_url)
                 clear_video_info()
@@ -2979,12 +3023,12 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 return
 
         if current_player is not None and current_player.poll() is None:
-            set_playback_controls(True, True)
+            set_playback_lamp("playing")
             status.set("Could not switch episodes; the current MPV player was left open.")
             return
         stop_current_player()
         playlist_playing_url = None
-        set_playback_controls(False)
+        set_playback_lamp(None)
         clear_video_info()
         status.set("Starting playlist in mpv...")
         root.update_idletasks()
@@ -3031,7 +3075,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             display_url if is_http_url(display_url) else None
         )
         episode_combo.current(start_index)
-        set_playback_controls(True, player.poll() is None)
+        set_playback_lamp("playing" if player.poll() is None else "stopped")
         url_entry.delete(0, tk.END)
         url_entry.insert(0, display_url)
         track_active_playlist(episodes, offset=start_index, request_info=False)
@@ -3132,7 +3176,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         clear_playlist_selection()
         request_id = playlist_request
         pending_playlist_url = url
-        set_playback_controls(False)
+        set_playback_lamp(None)
         clear_video_info()
         url_entry.delete(0, tk.END)
         url_entry.insert(0, url)
@@ -3320,7 +3364,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     def play_local_files(paths: tuple[Path, ...]) -> None:
         nonlocal current_player, current_player_ipc_server, loaded_playlist_path
         clear_playlist_selection()
-        set_playback_controls(False)
+        set_playback_lamp(None)
         clear_video_info()
         missing_path = next((path for path in paths if not path.is_file()), None)
         if missing_path is not None:
@@ -3364,7 +3408,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                 reused = False
             if reused:
                 stop_button.configure(state="normal")
-                set_playback_controls(True, True)
+                set_playback_lamp("playing")
                 track_active_playlist(local_episodes, request_info=False)
                 first_file = paths[0].resolve()
                 request_video_info(
@@ -3377,7 +3421,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
                     root.after(2000, check_player, None)
                 return
         if current_player is not None and current_player.poll() is None:
-            set_playback_controls(True, True)
+            set_playback_lamp("playing")
             status.set("Could not reach the current MPV player; leaving it open.")
             return
         stop_current_player()
@@ -3401,7 +3445,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         current_player = player
         current_player_ipc_server = ipc_server
         stop_button.configure(state="normal")
-        set_playback_controls(True, player.poll() is None)
+        set_playback_lamp("playing" if player.poll() is None else "stopped")
         track_active_playlist(local_episodes, request_info=False)
         first_file = paths[0].resolve()
         request_video_info(
@@ -3448,7 +3492,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     stop_button.configure(command=stop_playback)
     status_row = ttk.Frame(frame)
     status_row.pack(fill="x", pady=(10, 0))
-    status_label = ttk.Label(status_row, wraplength=380)
+    status_label = ttk.Label(status_row)
     status_label.pack(side="left", fill="x", expand=True)
 
     def seek_playback(offset_seconds: int) -> None:
@@ -3464,13 +3508,11 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         server = current_player_ipc_server
         if server is None:
             return
-        paused = _mpv_property_value(server, "pause") is True
-        if not _send_mpv_ipc_command_retry(
-            server, ["set_property", "pause", not paused]
-        ):
+        state = _toggle_mpv_pause(server)
+        if state is None:
             status.set("Could not reach MPV to pause or resume playback.")
             return
-        play_pause_button.configure(text="▶" if not paused else "⏸")
+        play_pause_button.configure(text="▶" if state == "paused" else "⏸")
 
     def set_playback_scale(scale: float) -> None:
         server = current_player_ipc_server
@@ -3555,6 +3597,43 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     fullscreen_button.pack(side="left", padx=(4, 0))
     transport_row.pack(fill="x", pady=(6, 0))
 
+
+    status_font = tkfont.Font(
+        root, font=ttk.Style(root).lookup("TLabel", "font") or "TkDefaultFont"
+    )
+    status_full_text = ""
+    status_display_text = ""
+
+    def fit_status_text() -> None:
+        nonlocal status_display_text
+        row_width = status_row.winfo_width()
+        if row_width <= 1:
+            return
+        reserved_width = sum(
+            widget.winfo_reqwidth() + 8
+            for widget in (progress_frame, duration_label)
+            if widget.winfo_manager()
+        )
+        available_width = min(
+            status_label.winfo_width(), row_width - reserved_width
+        ) - 4
+        if available_width <= 1:
+            fitted = ""
+        else:
+            fitted = _fit_text_to_width(
+                status_full_text, status_font.measure, available_width
+            )
+        if fitted != status_display_text:
+            status_display_text = fitted
+            status_label.configure(text=fitted)
+
+    def set_status_text(text: str) -> None:
+        nonlocal status_full_text
+        status_full_text = text
+        fit_status_text()
+
+    status_label.bind("<Configure>", lambda _event: fit_status_text())
+    status_label.bind("<Map>", lambda _event: fit_status_text())
     progress_frame = ttk.Frame(status_row)
     progress_bar = ttk.Progressbar(
         progress_frame,
@@ -3574,7 +3653,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         if progress is None:
             if not status_label.winfo_manager():
                 status_label.pack(side="left", fill="x", expand=True)
-            status_label.configure(text=_status_label_text(current_status))
+            set_status_text(_status_label_text(current_status))
             progress_frame.pack_forget()
             return
         _, percentage = progress
@@ -3587,6 +3666,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
 
     status.trace_add("write", update_status_display)
     update_status_display()
+
 
     root.after(100, poll_playlist_results)
     root.after(100, poll_radio_mix_results)

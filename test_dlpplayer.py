@@ -65,7 +65,7 @@ class SettingsTests(unittest.TestCase):
                 settings = load_settings(settings_path)
 
         self.assertEqual(settings.max_allowed_resolution, 1080)
-        self.assertEqual(settings.video_format, dlpplayer.AppSettings().video_format)
+        self.assertEqual(settings.video_format, VIDEO_FORMAT_DEFAULT)
 
     def test_reads_relative_tool_and_python_library_paths(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -517,10 +517,7 @@ class CookieBrowserDetectionTests(unittest.TestCase):
             "_mpv_property_value",
             side_effect=[
                 {"ytdl_hook-ytdl_path": "yt-dlp.exe"},
-                {
-                    "cookies-from-browser": "brave",
-                    "en,write-subs": "",
-                },
+                {"cookies-from-browser": "brave"},
             ],
         ):
             with patch.object(
@@ -539,15 +536,7 @@ class CookieBrowserDetectionTests(unittest.TestCase):
             if call.args[1][1] == "options/ytdl-raw-options"
         )
         self.assertNotIn("cookies-from-browser", raw_options)
-        self.assertNotIn("en,write-subs", raw_options)
         self.assertEqual(raw_options["js-runtimes"], "node:node.exe")
-        self.assertEqual(raw_options["sub-langs"], "en.*")
-        self.assertIn("write-subs", raw_options)
-        self.assertIn("write-auto-subs", raw_options)
-        self.assertIn(
-            ["set_property", "options/slang", ["en", "en-US", "en-GB"]],
-            [call.args[1] for call in request.call_args_list],
-        )
 
 
 class MpvIpcServerTests(unittest.TestCase):
@@ -710,6 +699,105 @@ class MpvProgressTests(unittest.TestCase):
         prop.assert_called_once_with("ipc", "idle-active")
 
 
+class MpvPauseToggleTests(unittest.TestCase):
+    def test_pauses_a_playing_video(self):
+        with (
+            patch.object(
+                dlpplayer, "_mpv_property_value", side_effect=[False, False]
+            ) as prop,
+            patch.object(
+                dlpplayer, "_send_mpv_ipc_command", return_value=True
+            ) as send,
+        ):
+            state = dlpplayer._toggle_mpv_pause("ipc")
+
+        self.assertEqual(state, "paused")
+        self.assertEqual(
+            [call.args for call in prop.call_args_list],
+            [("ipc", "idle-active"), ("ipc", "pause")],
+        )
+        send.assert_called_once_with("ipc", ["cycle", "pause"])
+
+    def test_resumes_a_paused_video(self):
+        with (
+            patch.object(
+                dlpplayer, "_mpv_property_value", side_effect=[False, True]
+            ),
+            patch.object(dlpplayer, "_send_mpv_ipc_command", return_value=True),
+        ):
+            self.assertEqual(dlpplayer._toggle_mpv_pause("ipc"), "playing")
+
+    def test_ignores_an_idle_player(self):
+        with (
+            patch.object(dlpplayer, "_mpv_property_value", return_value=True),
+            patch.object(dlpplayer, "_send_mpv_ipc_command") as send,
+        ):
+            self.assertIsNone(dlpplayer._toggle_mpv_pause("ipc"))
+
+        send.assert_not_called()
+
+    def test_reports_nothing_when_the_command_fails(self):
+        with (
+            patch.object(dlpplayer, "_mpv_property_value", return_value=False),
+            patch.object(dlpplayer, "_send_mpv_ipc_command", return_value=False),
+        ):
+            self.assertIsNone(dlpplayer._toggle_mpv_pause("ipc"))
+
+
+class MpvLampTests(unittest.TestCase):
+    def test_reads_playing_status(self):
+        self.assertEqual(
+            dlpplayer._mpv_lamp_state("Example | Playing | 1:05 / 5:00 (22%)"),
+            "playing",
+        )
+
+    def test_reads_paused_status(self):
+        for status in (
+            "Example | Paused | 1:05 / 5:00 (22%)",
+            "Paused | loading media...",
+            "Paused | 1:05",
+            "A | B | Paused | 1:05 / 5:00 (22%)",
+        ):
+            with self.subTest(status=status):
+                self.assertEqual(dlpplayer._mpv_lamp_state(status), "paused")
+
+    def test_reads_idle_player_as_stopped(self):
+        self.assertEqual(dlpplayer._mpv_lamp_state("MPV is ready."), "stopped")
+
+    def test_defaults_to_playing_without_status(self):
+        self.assertEqual(dlpplayer._mpv_lamp_state(None), "playing")
+
+
+class StatusTextFitTests(unittest.TestCase):
+    def test_keeps_text_that_fits(self):
+        measure = lambda text: len(text) * 10
+
+        self.assertEqual(
+            dlpplayer._fit_text_to_width("Ready.", measure, 100), "Ready."
+        )
+
+    def test_cuts_text_with_three_dots(self):
+        measure = lambda text: len(text) * 10
+
+        fitted = dlpplayer._fit_text_to_width("abcdefghij", measure, 50)
+
+        self.assertEqual(fitted, "ab...")
+        self.assertLessEqual(measure(fitted), 50)
+
+    def test_drops_trailing_space_before_the_dots(self):
+        measure = lambda text: len(text) * 10
+
+        self.assertEqual(
+            dlpplayer._fit_text_to_width("abc defg", measure, 70), "abc..."
+        )
+
+    def test_returns_nothing_when_the_dots_cannot_fit(self):
+        measure = lambda text: len(text) * 10
+
+        self.assertEqual(dlpplayer._fit_text_to_width("abcdef", measure, 20), "")
+        self.assertEqual(dlpplayer._fit_text_to_width("abcdef", measure, 0), "")
+
+
 class MpvUrlCommandTests(unittest.TestCase):
     def test_builds_command_for_generic_http_url(self):
         url = "https://media.example/watch?id=123"
@@ -721,16 +809,7 @@ class MpvUrlCommandTests(unittest.TestCase):
         )
 
         self.assertEqual(command[-1], url)
-        self.assertIn("--slang=en,en-US,en-GB", command)
         self.assertIn(f"--ytdl-format={VIDEO_FORMAT_DEFAULT}", command)
-        raw_options = next(
-            item.removeprefix("--ytdl-raw-options=")
-            for item in command
-            if item.startswith("--ytdl-raw-options=")
-        )
-        self.assertIn("sub-langs=en.*", raw_options)
-        self.assertIn("write-subs=", raw_options)
-        self.assertIn("write-auto-subs=", raw_options)
         self.assertFalse(any("js-runtimes" in item for item in command))
 
     def test_builds_mpv_command_with_ipc_server(self):
@@ -798,9 +877,7 @@ class MpvUrlCommandTests(unittest.TestCase):
 
         self.assertEqual(command[-2:], list(urls))
         self.assertIn(
-            "--ytdl-raw-options=sub-langs=en.*,write-subs=,"
-            "write-auto-subs=,cookies-from-browser=chrome,"
-            "js-runtimes=node:node.exe",
+            "--ytdl-raw-options=cookies-from-browser=chrome,js-runtimes=node:node.exe",
             command,
         )
 
