@@ -64,6 +64,7 @@ URLs, including items that have not started playing yet.
 Episode rows show source titles and runtimes when available. Local HLS runtimes
 are read from completed stream manifests. Multi-part Bilibili videos use each
 page's per-part title and duration in the episode list and MPV playlist.
+Use the 💾 button to save the loaded playlist as an M3U file.
 
 The GUI accepts HTTP(S) URLs supported by yt-dlp. You can also paste a link and
 press the play button.
@@ -87,6 +88,7 @@ The active scale and speed preset is enclosed in a thin black frame, with 100%
 selected by default and the frame moving to the preset you click. The play/pause
 button is also framed. The buttons show only their symbols to save space and are
 enabled while media is playing.
+Hover over any button to see its action tooltip.
 The panel shows up to 100 available URL comments in descending like-count
 order. Bilibili and YouTube retrieval are capped at 100; other sites are not
 forced to fetch comments. YouTube details appear before the separate comments

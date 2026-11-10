@@ -2199,6 +2199,60 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     frame = ttk.Frame(root, padding=16)
     frame.pack(fill="both", expand=True)
 
+    def add_button_tooltip(button: ttk.Button, text: str) -> None:
+        tooltip: tk.Toplevel | None = None
+        pending_id: str | None = None
+
+        def show_tooltip() -> None:
+            nonlocal pending_id, tooltip
+            pending_id = None
+            if not button.winfo_exists() or not button.winfo_ismapped():
+                return
+            tooltip = tk.Toplevel(root)
+            tooltip.wm_overrideredirect(True)
+            border = ttk.Frame(
+                tooltip,
+                borderwidth=1,
+                relief="solid",
+                padding=(6, 3),
+            )
+            border.pack()
+            ttk.Label(border, text=text).pack()
+            tooltip.update_idletasks()
+            x = min(
+                button.winfo_rootx(),
+                button.winfo_screenwidth() - tooltip.winfo_width(),
+            )
+            y = button.winfo_rooty() + button.winfo_height() + 4
+            tooltip.wm_geometry(f"+{max(0, x)}+{y}")
+
+        def schedule_tooltip(_event: object) -> None:
+            nonlocal pending_id
+            if pending_id is None and tooltip is None:
+                pending_id = button.after(500, show_tooltip)
+
+        def hide_tooltip(_event: object) -> None:
+            nonlocal pending_id, tooltip
+            if pending_id is not None:
+                try:
+                    button.after_cancel(pending_id)
+                except tk.TclError:
+                    pass
+                pending_id = None
+            if tooltip is not None:
+                try:
+                    tooltip.destroy()
+                except tk.TclError:
+                    pass
+                tooltip = None
+
+        button.bind("<Enter>", schedule_tooltip, add="+")
+        button.bind("<Leave>", hide_tooltip, add="+")
+        button.bind("<FocusIn>", schedule_tooltip, add="+")
+        button.bind("<FocusOut>", hide_tooltip, add="+")
+        button.bind("<ButtonPress>", hide_tooltip, add="+")
+
+
     drop_area = tk.Label(
         frame,
         text="Drop local video, playlist, or URL here",
@@ -2214,8 +2268,10 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     url_entry = ttk.Entry(url_row)
     url_entry.pack(side="left", fill="x", expand=True)
     stop_button = ttk.Button(url_row, text="■", state="disabled", width=0)
+    add_button_tooltip(stop_button, "Stop playback")
     stop_button.pack(side="right", padx=(8, 0))
     play_button = ttk.Button(url_row, text="▶", width=0)
+    add_button_tooltip(play_button, "Play the entered URL or local media path")
     play_button.pack(side="right")
 
     episode_row = ttk.Frame(frame)
@@ -2228,8 +2284,15 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         height=12,
     )
     episode_combo.pack(side="left", fill="x", expand=True)
-    save_playlist_button = ttk.Button(episode_row, state="disabled", width=0)
-    save_playlist_button.pack(side="right", padx=(8, 0))
+    save_playlist_button = ttk.Button(
+        episode_row,
+        text="💾",
+        state="disabled",
+        width=0,
+        padding=(4, 2),
+    )
+    save_playlist_button.pack(side="right", padx=(12, 0))
+    add_button_tooltip(save_playlist_button, "Save the loaded playlist as an M3U file")
 
     info_frame = ttk.LabelFrame(frame, text="Video information", padding=8)
     video_issue = tk.StringVar(value="")
@@ -3577,7 +3640,10 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         )
 
     def make_framed_button(
-        text: str, command: Callable[[], None], padx: tuple[int, int]
+        text: str,
+        command: Callable[[], None],
+        padx: tuple[int, int],
+        tooltip: str,
     ) -> tuple[ttk.Button, tk.Frame]:
         holder = tk.Frame(
             transport_row, bd=0, highlightthickness=0, background=row_background
@@ -3586,6 +3652,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             holder, text=text, state="disabled", width=0, command=command
         )
         button.pack(fill="both", expand=True)
+        add_button_tooltip(button, tooltip)
         holder.pack(side="left", padx=padx)
         return button, holder
 
@@ -3602,8 +3669,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         command=lambda: seek_playback(-15),
     )
     rewind_button.pack(side="left")
+    add_button_tooltip(rewind_button, "Seek backward 15 seconds")
     play_pause_button, play_pause_holder = make_framed_button(
-        "⏸", toggle_playback_pause, (4, 0)
+        "⏸", toggle_playback_pause, (4, 0), "Pause or resume playback"
     )
     forward_button = ttk.Button(
         transport_row,
@@ -3613,6 +3681,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         command=lambda: seek_playback(15),
     )
     forward_button.pack(side="left", padx=(4, 0))
+    add_button_tooltip(forward_button, "Seek forward 15 seconds")
     transport_stop_button = ttk.Button(
         transport_row,
         text="■",
@@ -3621,15 +3690,25 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         command=stop_playback,
     )
     transport_stop_button.pack(side="left", padx=(4, 0))
+    add_button_tooltip(transport_stop_button, "Stop playback")
     add_separator()
     scale_50_button, scale_50_holder = make_framed_button(
-        "½", lambda: set_playback_scale(0.5), (6, 0)
+        "½",
+        lambda: set_playback_scale(0.5),
+        (6, 0),
+        "Set player window scale to 50%",
     )
     scale_100_button, scale_100_holder = make_framed_button(
-        "1", lambda: set_playback_scale(1.0), (4, 0)
+        "1",
+        lambda: set_playback_scale(1.0),
+        (4, 0),
+        "Set player window scale to 100%",
     )
     scale_150_button, scale_150_holder = make_framed_button(
-        "1½", lambda: set_playback_scale(1.5), (4, 0)
+        "1½",
+        lambda: set_playback_scale(1.5),
+        (4, 0),
+        "Set player window scale to 150%",
     )
     fullscreen_button = ttk.Button(
         transport_row,
@@ -3639,18 +3718,31 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         command=toggle_fullscreen,
     )
     fullscreen_button.pack(side="left", padx=(4, 0))
+    add_button_tooltip(fullscreen_button, "Toggle fullscreen")
     add_separator()
     speed_1_button, speed_1_holder = make_framed_button(
-        "1", lambda: set_playback_speed(1.0), (6, 0)
+        "1",
+        lambda: set_playback_speed(1.0),
+        (6, 0),
+        "Set playback speed to 1× (normal)",
     )
     speed_125_button, speed_125_holder = make_framed_button(
-        "1.25", lambda: set_playback_speed(1.25), (4, 0)
+        "1.25",
+        lambda: set_playback_speed(1.25),
+        (4, 0),
+        "Set playback speed to 1.25×",
     )
     speed_150_button, speed_150_holder = make_framed_button(
-        "1.5", lambda: set_playback_speed(1.5), (4, 0)
+        "1.5",
+        lambda: set_playback_speed(1.5),
+        (4, 0),
+        "Set playback speed to 1.5×",
     )
     speed_200_button, speed_200_holder = make_framed_button(
-        "2", lambda: set_playback_speed(2.0), (4, 0)
+        "2",
+        lambda: set_playback_speed(2.0),
+        (4, 0),
+        "Set playback speed to 2×",
     )
 
     scale_frames = {
@@ -3682,6 +3774,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         command=toggle_mute,
     )
     mute_button.pack(side="left", padx=(6, 0))
+    add_button_tooltip(mute_button, "Toggle mute")
     volume_down_button = ttk.Button(
         transport_row,
         text="🔉",
@@ -3690,6 +3783,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         command=lambda: change_volume(-5),
     )
     volume_down_button.pack(side="left", padx=(4, 0))
+    add_button_tooltip(volume_down_button, "Decrease volume by 5")
     volume_up_button = ttk.Button(
         transport_row,
         text="🔊",
@@ -3698,6 +3792,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         command=lambda: change_volume(5),
     )
     volume_up_button.pack(side="left", padx=(4, 0))
+    add_button_tooltip(volume_up_button, "Increase volume by 5")
 
     transport_row.pack(fill="x", pady=(6, 0))
 
