@@ -661,6 +661,23 @@ class MpvProgressTests(unittest.TestCase):
             dlpplayer._playback_duration("Playing | loading media...")
         )
 
+    def test_hides_playback_title_and_state_from_the_status_bar(self):
+        for status in (
+            "Example episode | Playing | 4:47 / 16:35 (30%)",
+            "Paused | 4:47 / 16:35 (30%)",
+            "Playing | 1:05",
+            "YouTube radio mix | Example episode | Playing | 1:05 / 5:00 (22%)",
+        ):
+            self.assertEqual(dlpplayer._status_label_text(status), "", status)
+        for status in (
+            "MPV is ready.",
+            "mpv finished playback.",
+            "YouTube radio mix is playing. Use Stop to end it.",
+            "Checking URL for playlist episodes...",
+            "Playback stopped; MPV remains open.",
+        ):
+            self.assertEqual(dlpplayer._status_label_text(status), status)
+
     def test_reads_status_from_mpv_properties(self):
         with patch.object(
             dlpplayer,

@@ -47,16 +47,16 @@ files. Local video files open directly in mpv; multiple files play in order.
 M3U/M3U8 and supported URL playlists start at episode 1 and continue in order.
 The episode dropdown is shown when items can be enumerated. Selecting an episode
 switches the current MPV player to it and continues through the remaining list.
-Use **Save playlist** beside the episode selector to export the current list as an
+Use the button beside the episode selector to export the current list as an
 M3U/M3U8 file; drop that file into the app later to load it locally.
 A DLPPlayer-managed MPV process stays open after normal playback finishes. GUI and
 CLI playback reuse that per-user process for subsequent URLs, playlists, and local
 media. Before reusing MPV for YouTube, DLPPlayer refreshes the yt-dlp path, format,
-browser-cookie, and JavaScript-runtime options over IPC. **Stop** stops normal
-playback but leaves MPV ready. An MPV started
+browser-cookie, and JavaScript-runtime options over IPC. The stop button stops
+normal playback but leaves MPV ready. An MPV started
 independently without DLPPlayer's IPC endpoint cannot be attached. `RD...` radio
 mixes use ten-item batches; each batch plays in order, and the next batch loads
-when MPV finishes. Use **Stop** to end the mix; closing MPV also ends the current
+when MPV finishes. Use the stop button to end the mix; closing MPV also ends the current
 batch before continuing.
 When yt-dlp provides titles, mpv's playlist displays them instead of raw watch
 URLs, including items that have not started playing yet.
@@ -66,16 +66,21 @@ are read from completed stream manifests. Multi-part Bilibili videos use each
 page's per-part title and duration in the episode list and MPV playlist.
 
 The GUI accepts HTTP(S) URLs supported by yt-dlp. You can also paste a link and
-press **Play in mpv**.
+press the play button.
 
 Single-video URLs play with the same button.
 
 The window title prompts "Drop a video, playlist, or link."
 The information panel shows the video title prominently and hides when mpv exits.
 Drag-select any part of the title or metadata and press Ctrl+C to copy it.
-The status bar shows a black play triangle while the mpv process runs and a solid
-black square after it stops. While a video plays, a progress bar with the
-playback percentage appears to the right, followed by the video's total length.
+The status bar does not repeat the video title or a playing/paused label. While
+a video plays, the full-width progress bar shows the playback percentage in the
+center and the total length at its right edge; otherwise the status bar shows
+messages.
+Status-bar transport controls seek back 15 seconds, toggle pause/resume, seek
+forward 15 seconds, and stop playback. A second glyph group scales the mpv
+window to 50%, 100%, or 150% (½, 1, 1½) and toggles fullscreen (⛶). The buttons
+show only their symbols to save space and are enabled while media is playing.
 The panel shows up to 100 available URL comments in descending like-count
 order. Bilibili and YouTube retrieval are capped at 100; other sites are not
 forced to fetch comments. YouTube details appear before the separate comments
