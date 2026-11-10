@@ -2670,8 +2670,8 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             speed_150_button,
             speed_200_button,
             mute_button,
-            volume_up_button,
             volume_down_button,
+            volume_up_button,
         ):
             button.configure(state=transport_state)
         transport_stop_button.configure(
@@ -3589,6 +3589,11 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         holder.pack(side="left", padx=padx)
         return button, holder
 
+    def add_separator() -> None:
+        ttk.Separator(transport_row, orient="vertical").pack(
+            side="left", fill="y", padx=(8, 8)
+        )
+
     rewind_button = ttk.Button(
         transport_row,
         text="«",
@@ -3616,8 +3621,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         command=stop_playback,
     )
     transport_stop_button.pack(side="left", padx=(4, 0))
+    add_separator()
     scale_50_button, scale_50_holder = make_framed_button(
-        "½", lambda: set_playback_scale(0.5), (12, 0)
+        "½", lambda: set_playback_scale(0.5), (6, 0)
     )
     scale_100_button, scale_100_holder = make_framed_button(
         "1", lambda: set_playback_scale(1.0), (4, 0)
@@ -3633,8 +3639,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         command=toggle_fullscreen,
     )
     fullscreen_button.pack(side="left", padx=(4, 0))
+    add_separator()
     speed_1_button, speed_1_holder = make_framed_button(
-        "1", lambda: set_playback_speed(1.0), (12, 0)
+        "1", lambda: set_playback_speed(1.0), (6, 0)
     )
     speed_125_button, speed_125_holder = make_framed_button(
         "1.25", lambda: set_playback_speed(1.25), (4, 0)
@@ -3666,6 +3673,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     highlight_button(speed_frames, 1.0)
     set_frame_active(play_pause_holder, True)
 
+    add_separator()
     mute_button = ttk.Button(
         transport_row,
         text="🔇",
@@ -3673,15 +3681,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         width=0,
         command=toggle_mute,
     )
-    mute_button.pack(side="left", padx=(12, 0))
-    volume_up_button = ttk.Button(
-        transport_row,
-        text="🔊",
-        state="disabled",
-        width=0,
-        command=lambda: change_volume(5),
-    )
-    volume_up_button.pack(side="left", padx=(4, 0))
+    mute_button.pack(side="left", padx=(6, 0))
     volume_down_button = ttk.Button(
         transport_row,
         text="🔉",
@@ -3690,6 +3690,14 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         command=lambda: change_volume(-5),
     )
     volume_down_button.pack(side="left", padx=(4, 0))
+    volume_up_button = ttk.Button(
+        transport_row,
+        text="🔊",
+        state="disabled",
+        width=0,
+        command=lambda: change_volume(5),
+    )
+    volume_up_button.pack(side="left", padx=(4, 0))
 
     transport_row.pack(fill="x", pady=(6, 0))
 
@@ -3763,7 +3771,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     status.trace_add("write", update_status_display)
     update_status_display()
 
-
+    fit_window_height()
     root.after(100, poll_playlist_results)
     root.after(100, poll_radio_mix_results)
     root.mainloop()
