@@ -2665,6 +2665,13 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             scale_100_button,
             scale_150_button,
             fullscreen_button,
+            speed_1_button,
+            speed_125_button,
+            speed_150_button,
+            speed_200_button,
+            mute_button,
+            volume_up_button,
+            volume_down_button,
         ):
             button.configure(state=transport_state)
         transport_stop_button.configure(
@@ -3522,6 +3529,8 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             server, ["set_property", "window-scale", scale]
         ):
             status.set("Could not reach MPV to change the window scale.")
+            return
+        highlight_button(scale_frames, scale)
 
     def toggle_fullscreen() -> None:
         server = current_player_ipc_server
@@ -3530,7 +3539,56 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         if not _send_mpv_ipc_command_retry(server, ["cycle", "fullscreen"]):
             status.set("Could not reach MPV to toggle fullscreen.")
 
+    def set_playback_speed(speed: float) -> None:
+        server = current_player_ipc_server
+        if server is None:
+            return
+        if not _send_mpv_ipc_command_retry(
+            server, ["set_property", "speed", speed]
+        ):
+            status.set("Could not reach MPV to change the playback speed.")
+            return
+        highlight_button(speed_frames, speed)
+
+    def toggle_mute() -> None:
+        server = current_player_ipc_server
+        if server is None:
+            return
+        if not _send_mpv_ipc_command_retry(server, ["cycle", "mute"]):
+            status.set("Could not reach MPV to toggle mute.")
+
+    def change_volume(step: int) -> None:
+        server = current_player_ipc_server
+        if server is None:
+            return
+        if not _send_mpv_ipc_command_retry(server, ["add", "volume", step]):
+            status.set("Could not reach MPV to change the volume.")
+
     transport_row = ttk.Frame(frame)
+    row_background = (
+        ttk.Style(root).lookup("TFrame", "background") or root.cget("background")
+    )
+
+    def set_frame_active(holder: tk.Frame, active: bool) -> None:
+        holder.configure(
+            highlightthickness=1 if active else 0,
+            highlightbackground="#000000",
+            highlightcolor="#000000",
+        )
+
+    def make_framed_button(
+        text: str, command: Callable[[], None], padx: tuple[int, int]
+    ) -> tuple[ttk.Button, tk.Frame]:
+        holder = tk.Frame(
+            transport_row, bd=0, highlightthickness=0, background=row_background
+        )
+        button = ttk.Button(
+            holder, text=text, state="disabled", width=0, command=command
+        )
+        button.pack(fill="both", expand=True)
+        holder.pack(side="left", padx=padx)
+        return button, holder
+
     rewind_button = ttk.Button(
         transport_row,
         text="«",
@@ -3539,14 +3597,9 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         command=lambda: seek_playback(-15),
     )
     rewind_button.pack(side="left")
-    play_pause_button = ttk.Button(
-        transport_row,
-        text="⏸",
-        state="disabled",
-        width=0,
-        command=toggle_playback_pause,
+    play_pause_button, play_pause_holder = make_framed_button(
+        "⏸", toggle_playback_pause, (4, 0)
     )
-    play_pause_button.pack(side="left", padx=(4, 0))
     forward_button = ttk.Button(
         transport_row,
         text="»",
@@ -3563,30 +3616,15 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         command=stop_playback,
     )
     transport_stop_button.pack(side="left", padx=(4, 0))
-    scale_50_button = ttk.Button(
-        transport_row,
-        text="½",
-        state="disabled",
-        width=0,
-        command=lambda: set_playback_scale(0.5),
+    scale_50_button, scale_50_holder = make_framed_button(
+        "½", lambda: set_playback_scale(0.5), (12, 0)
     )
-    scale_50_button.pack(side="left", padx=(12, 0))
-    scale_100_button = ttk.Button(
-        transport_row,
-        text="1",
-        state="disabled",
-        width=0,
-        command=lambda: set_playback_scale(1.0),
+    scale_100_button, scale_100_holder = make_framed_button(
+        "1", lambda: set_playback_scale(1.0), (4, 0)
     )
-    scale_100_button.pack(side="left", padx=(4, 0))
-    scale_150_button = ttk.Button(
-        transport_row,
-        text="1½",
-        state="disabled",
-        width=0,
-        command=lambda: set_playback_scale(1.5),
+    scale_150_button, scale_150_holder = make_framed_button(
+        "1½", lambda: set_playback_scale(1.5), (4, 0)
     )
-    scale_150_button.pack(side="left", padx=(4, 0))
     fullscreen_button = ttk.Button(
         transport_row,
         text="⛶",
@@ -3595,6 +3633,64 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         command=toggle_fullscreen,
     )
     fullscreen_button.pack(side="left", padx=(4, 0))
+    speed_1_button, speed_1_holder = make_framed_button(
+        "1", lambda: set_playback_speed(1.0), (12, 0)
+    )
+    speed_125_button, speed_125_holder = make_framed_button(
+        "1.25", lambda: set_playback_speed(1.25), (4, 0)
+    )
+    speed_150_button, speed_150_holder = make_framed_button(
+        "1.5", lambda: set_playback_speed(1.5), (4, 0)
+    )
+    speed_200_button, speed_200_holder = make_framed_button(
+        "2", lambda: set_playback_speed(2.0), (4, 0)
+    )
+
+    scale_frames = {
+        0.5: scale_50_holder,
+        1.0: scale_100_holder,
+        1.5: scale_150_holder,
+    }
+    speed_frames = {
+        1.0: speed_1_holder,
+        1.25: speed_125_holder,
+        1.5: speed_150_holder,
+        2.0: speed_200_holder,
+    }
+
+    def highlight_button(group: dict[float, tk.Frame], active: float) -> None:
+        for value, holder in group.items():
+            set_frame_active(holder, value == active)
+
+    highlight_button(scale_frames, 1.0)
+    highlight_button(speed_frames, 1.0)
+    set_frame_active(play_pause_holder, True)
+
+    mute_button = ttk.Button(
+        transport_row,
+        text="🔇",
+        state="disabled",
+        width=0,
+        command=toggle_mute,
+    )
+    mute_button.pack(side="left", padx=(12, 0))
+    volume_up_button = ttk.Button(
+        transport_row,
+        text="🔊",
+        state="disabled",
+        width=0,
+        command=lambda: change_volume(5),
+    )
+    volume_up_button.pack(side="left", padx=(4, 0))
+    volume_down_button = ttk.Button(
+        transport_row,
+        text="🔉",
+        state="disabled",
+        width=0,
+        command=lambda: change_volume(-5),
+    )
+    volume_down_button.pack(side="left", padx=(4, 0))
+
     transport_row.pack(fill="x", pady=(6, 0))
 
 

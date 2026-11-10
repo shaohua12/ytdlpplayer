@@ -79,8 +79,13 @@ center and the total length at its right edge; otherwise the status bar shows
 messages.
 Status-bar transport controls seek back 15 seconds, toggle pause/resume, seek
 forward 15 seconds, and stop playback. A second glyph group scales the mpv
-window to 50%, 100%, or 150% (½, 1, 1½) and toggles fullscreen (⛶). The buttons
-show only their symbols to save space and are enabled while media is playing.
+window to 50%, 100%, or 150% (½, 1, 1½) and toggles fullscreen (⛶). A third
+group sets the playback speed to 1×, 1.25×, 1.5×, or 2× (1, 1.25, 1.5, 2). A
+fourth group toggles mute (🔇) and raises or lowers the volume by 5 (🔊 / 🔉).
+The active scale and speed preset is enclosed in a thin black frame, with 100%
+selected by default and the frame moving to the preset you click. The play/pause
+button is also framed. The buttons show only their symbols to save space and are
+enabled while media is playing.
 The panel shows up to 100 available URL comments in descending like-count
 order. Bilibili and YouTube retrieval are capped at 100; other sites are not
 forced to fetch comments. YouTube details appear before the separate comments
