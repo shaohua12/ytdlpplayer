@@ -871,21 +871,6 @@ def _status_label_text(status: str) -> str:
     return status
 
 
-def _fit_text_to_width(
-    text: str, measure: Callable[[str], float], max_width: int
-) -> str:
-    if max_width <= 0:
-        return ""
-    if measure(text) <= max_width:
-        return text
-    low, high = 0, len(text)
-    while low < high:
-        middle = (low + high + 1) // 2
-        if measure(text[:middle].rstrip() + "...") <= max_width:
-            low = middle
-        else:
-            high = middle - 1
-    return text[:low].rstrip() + "..." if low else ""
 
 
 def build_video_info_command(
@@ -1653,17 +1638,19 @@ def _comment_details_line(comment: VideoComment) -> str:
     posted_at = _format_comment_posted_at(comment.created_at)
     if posted_at:
         details.append(posted_at)
-    details.append(f"{comment.reply_count:,} replies")
-    details.append(f"{comment.like_count:,} likes")
+    if comment.reply_count > 0:
+        details.append(f"{comment.reply_count:,} replies")
+    if comment.like_count > 0:
+        details.append(f"{comment.like_count:,} likes")
     return " · ".join(details)
 
 
 def _format_comment_display(comment: VideoComment) -> str:
-    author = f"{comment.author} · " if comment.author else ""
+    details = _comment_details_line(comment)
+    header = " · ".join(part for part in (comment.author, details) if part)
     return (
-        f"{author}{_comment_details_line(comment)}\n"
-        f"{comment.text}\n\n"
-    )
+        f"{header}\n" if header else ""
+    ) + f"{comment.text}\n\n"
 
 
 def _ytdlp_comments(metadata: dict[str, object]) -> tuple[VideoComment, ...]:
@@ -2385,7 +2372,7 @@ def play(args: argparse.Namespace) -> int:
 def launch_gui(_args: argparse.Namespace | None = None) -> int:
     try:
         import tkinter as tk
-        from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
+        from tkinter import filedialog, messagebox, scrolledtext, ttk
 
         from tkinterdnd2 import DND_ALL, TkinterDnD
     except ImportError as error:
@@ -3773,7 +3760,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     stop_button.configure(command=stop_playback)
     status_row = ttk.Frame(frame)
     status_row.pack(fill="x", pady=(10, 0))
-    status_label = ttk.Label(status_row)
+    status_label = ttk.Label(status_row, anchor="w", justify="left")
     status_label.pack(side="left", fill="x", expand=True)
 
     def seek_playback(offset_seconds: int) -> None:
@@ -4014,14 +4001,12 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     transport_row.pack(fill="x", pady=(6, 0))
 
 
-    status_font = tkfont.Font(
-        root, font=ttk.Style(root).lookup("TLabel", "font") or "TkDefaultFont"
-    )
     status_full_text = ""
     status_display_text = ""
+    status_wraplength = 0
 
     def fit_status_text() -> None:
-        nonlocal status_display_text
+        nonlocal status_display_text, status_wraplength
         row_width = status_row.winfo_width()
         if row_width <= 1:
             return
@@ -4034,14 +4019,18 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
             status_label.winfo_width(), row_width - reserved_width
         ) - 4
         if available_width <= 1:
-            fitted = ""
-        else:
-            fitted = _fit_text_to_width(
-                status_full_text, status_font.measure, available_width
-            )
-        if fitted != status_display_text:
-            status_display_text = fitted
-            status_label.configure(text=fitted)
+            return
+        if (
+            status_display_text == status_full_text
+            and status_wraplength == available_width
+        ):
+            return
+        status_display_text = status_full_text
+        status_wraplength = available_width
+        status_label.configure(
+            text=status_display_text, wraplength=status_wraplength
+        )
+        root.after_idle(fit_window_height)
 
     def set_status_text(text: str) -> None:
         nonlocal status_full_text

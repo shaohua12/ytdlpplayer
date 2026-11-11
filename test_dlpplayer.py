@@ -769,35 +769,6 @@ class MpvLampTests(unittest.TestCase):
         self.assertEqual(dlpplayer._mpv_lamp_state(None), "playing")
 
 
-class StatusTextFitTests(unittest.TestCase):
-    def test_keeps_text_that_fits(self):
-        measure = lambda text: len(text) * 10
-
-        self.assertEqual(
-            dlpplayer._fit_text_to_width("Ready.", measure, 100), "Ready."
-        )
-
-    def test_cuts_text_with_three_dots(self):
-        measure = lambda text: len(text) * 10
-
-        fitted = dlpplayer._fit_text_to_width("abcdefghij", measure, 50)
-
-        self.assertEqual(fitted, "ab...")
-        self.assertLessEqual(measure(fitted), 50)
-
-    def test_drops_trailing_space_before_the_dots(self):
-        measure = lambda text: len(text) * 10
-
-        self.assertEqual(
-            dlpplayer._fit_text_to_width("abc defg", measure, 70), "abc..."
-        )
-
-    def test_returns_nothing_when_the_dots_cannot_fit(self):
-        measure = lambda text: len(text) * 10
-
-        self.assertEqual(dlpplayer._fit_text_to_width("abcdef", measure, 20), "")
-        self.assertEqual(dlpplayer._fit_text_to_width("abcdef", measure, 0), "")
-
 
 class MpvUrlCommandTests(unittest.TestCase):
     def test_builds_command_for_generic_http_url(self):
@@ -1887,6 +1858,25 @@ class BilibiliCommentFetchTests(unittest.TestCase):
             display,
             "Author · 2026-11-09 16:06 · 90 replies · 29 likes\nComment\n\n",
         )
+
+    def test_comment_display_hides_zero_reply_and_like_counts(self):
+        cases = (
+            ("No replies", 0, 3, "Author · 3 likes\nNo replies\n\n"),
+            ("No likes", 2, 0, "Author · 2 replies\nNo likes\n\n"),
+            ("No counts", 0, 0, "Author\nNo counts\n\n"),
+            ("No author or counts", 0, 0, "No author or counts\n\n"),
+        )
+        for text, reply_count, like_count, expected in cases:
+            with self.subTest(text=text):
+                comment = dlpplayer.VideoComment(
+                    text,
+                    like_count,
+                    "Author" if text != "No author or counts" else None,
+                    reply_count=reply_count,
+                )
+                self.assertEqual(
+                    dlpplayer._format_comment_display(comment), expected
+                )
 
 
 class VideoInformationTests(unittest.TestCase):

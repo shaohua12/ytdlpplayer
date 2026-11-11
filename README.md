@@ -91,12 +91,12 @@ enabled while media is playing.
 Hover over any button to see its action tooltip.
 The panel shows up to 100 available URL comments. Bilibili uses its hot-comment
 feed, ranked by reply count, then likes, then newest date; each row shows the
-author, post time, reply count, like count, and text. Bilibili and YouTube
+author, post time, any nonzero reply/like counts, and text. Bilibili and YouTube
 retrieval are capped at 100; other sites are not forced to fetch comments.
 Video details appear before the separate comments fetch completes. The
 comments box is omitted when none are available.
 The window starts 20 pixels from the desktop's top and right edges, shrinks to a
-compact idle height, and grows to fit the panel during playback.
+compact idle height, and grows to fit the panel or wrapped status messages.
 URL details include resolution, duration, format, codecs, frame rate, size,
 uploader, counts, categories, tags, and a short description. Bilibili details
 omit the uploader, upload date, and view/like/comment summary. Local files show
