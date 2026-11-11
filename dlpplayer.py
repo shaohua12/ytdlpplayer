@@ -3766,11 +3766,15 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     set_frame_active(play_pause_holder, True)
 
     add_separator()
+    ttk.Style(root).configure(
+        "VolumeGlyph.TButton", font=("Segoe UI Emoji", 12)
+    )
     mute_button = ttk.Button(
         transport_row,
         text="🔇",
         state="disabled",
         width=0,
+        style="VolumeGlyph.TButton",
         command=toggle_mute,
     )
     mute_button.pack(side="left", padx=(6, 0))
@@ -3780,6 +3784,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         text="🔉",
         state="disabled",
         width=0,
+        style="VolumeGlyph.TButton",
         command=lambda: change_volume(-5),
     )
     volume_down_button.pack(side="left", padx=(4, 0))
@@ -3789,6 +3794,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         text="🔊",
         state="disabled",
         width=0,
+        style="VolumeGlyph.TButton",
         command=lambda: change_volume(5),
     )
     volume_up_button.pack(side="left", padx=(4, 0))

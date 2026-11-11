@@ -82,7 +82,7 @@ Status-bar transport controls seek back 15 seconds, toggle pause/resume, seek
 forward 15 seconds, and stop playback. A second glyph group scales the mpv
 window to 50%, 100%, or 150% (½, 1, 1½) and toggles fullscreen (⛶). A third
 group sets the playback speed to 1×, 1.25×, 1.5×, or 2× (1, 1.25, 1.5, 2). A
-fourth group toggles mute (🔇) and lowers or raises the volume by 5 (🔉 / 🔊).
+fourth group uses larger glyphs to toggle mute and lower or raise the volume by 5 (🔉 / 🔊).
 Groups are separated by full-height vertical dividers.
 The active scale and speed preset is enclosed in a thin black frame, with 100%
 selected by default and the frame moving to the preset you click. The play/pause
