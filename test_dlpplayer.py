@@ -1,4 +1,5 @@
 import queue
+import json
 import tempfile
 import threading
 import tkinter
@@ -1033,6 +1034,36 @@ class VideoInfoCommandTests(unittest.TestCase):
         self.assertIn("--no-write-comments", bilibili_command)
         self.assertNotIn("--write-comments", bilibili_command)
 
+    def test_defers_bilibili_comments_until_video_info_is_returned(self):
+        url = "https://www.bilibili.com/video/BV123"
+        metadata = {
+            "title": "Bilibili clip",
+            "id": "BV123",
+            "_old_archive_ids": ["bilibili 42"],
+            "webpage_url": url,
+            "vcodec": "h264",
+        }
+        result = SimpleNamespace(
+            returncode=0, stdout=json.dumps(metadata), stderr=""
+        )
+        with (
+            patch.object(
+                dlpplayer,
+                "_run_ytdlp_with_browser_fallback",
+                return_value=result,
+            ),
+            patch.object(dlpplayer, "_fetch_bilibili_comments") as fetch_comments,
+        ):
+            info = dlpplayer.fetch_url_video_info("yt-dlp.exe", url)
+
+        fetch_comments.assert_not_called()
+        self.assertEqual(info.comments, ())
+        self.assertEqual(
+            info.comment_source,
+            dlpplayer.BilibiliCommentSource(url, "BV123", "42", url),
+        )
+
+
     def test_queues_video_information_before_comments_finish(self):
         info = dlpplayer.VideoInfo("Video", ("1920 × 1080",))
         comments = (dlpplayer.VideoComment("Top comment", 12, "Author"),)
@@ -1063,6 +1094,68 @@ class VideoInfoCommandTests(unittest.TestCase):
             results.get(timeout=1),
             (7, dlpplayer.VideoInfo(info.title, info.details, comments), None),
         )
+
+    def test_loads_bilibili_comments_after_video_info_is_queued(self):
+        url = "https://www.bilibili.com/video/BV123"
+        source = dlpplayer.BilibiliCommentSource(url, "BV123", "42", url)
+        info = dlpplayer.VideoInfo(
+            "Video", ("1920 × 1080",), comment_source=source
+        )
+        comments_started = threading.Event()
+        finish_comments = threading.Event()
+        results = queue.Queue()
+
+        def load_comments(_source):
+            queued_info = results.get_nowait()
+            if queued_info != (8, info, None):
+                raise AssertionError("video info was not queued before comments")
+            results.put(queued_info)
+            comments_started.set()
+            if not finish_comments.wait(2):
+                raise TimeoutError("comments still loading")
+            return [
+                {
+                    "text": "Top comment",
+                    "like_count": 29,
+                    "author": "Author",
+                    "reply_count": 21,
+                    "timestamp": 1,
+                }
+            ]
+
+        with patch.object(
+            dlpplayer,
+            "_fetch_bilibili_comments_from_source",
+            side_effect=load_comments,
+        ) as fetch_comments:
+            worker = threading.Thread(
+                target=dlpplayer._load_video_info,
+                args=(8, lambda: info, url, None, results),
+            )
+            worker.start()
+            try:
+                self.assertTrue(comments_started.wait(1))
+                self.assertEqual(results.get(timeout=1), (8, info, None))
+            finally:
+                finish_comments.set()
+                worker.join(timeout=1)
+
+            self.assertFalse(worker.is_alive())
+            fetch_comments.assert_called_once_with(source)
+
+        self.assertEqual(
+            results.get(timeout=1),
+            (
+                8,
+                dlpplayer.VideoInfo(
+                    "Video",
+                    ("1920 × 1080",),
+                    (dlpplayer.VideoComment("Top comment", 29, "Author", 21, 1),),
+                ),
+                None,
+            ),
+        )
+
 
     def test_fetches_youtube_comments_in_separate_command(self):
         result = SimpleNamespace(
@@ -1575,14 +1668,103 @@ class PlaylistEpisodeTests(unittest.TestCase):
 
 
 class BilibiliCommentFetchTests(unittest.TestCase):
-    def test_fetches_at_most_one_hundred_comments(self):
-        requested_pages = []
-        requested_oids = []
+    def _fake_wbi_data(self, replies_for_page):
+        def fake_api(endpoint, query, _referer, **_kwargs):
+            if endpoint.endswith("/x/web-interface/nav"):
+                return {
+                    "wbi_img": {
+                        "img_url": "https://i0.hdslb.com/wbi/" + "a" * 32 + ".png",
+                        "sub_url": "https://i0.hdslb.com/wbi/" + "b" * 32 + ".png",
+                    }
+                }
+            self.assertEqual(endpoint, "https://api.bilibili.com/x/v2/reply/wbi/main")
+            self.assertEqual(query["mode"], "3")
+            self.assertTrue(query["w_rid"])
+            offset = json.loads(query["pagination_str"])["offset"]
+            return replies_for_page(offset, query)
 
-        def fake_api(endpoint, query, referer):
-            requested_pages.append(query["pn"])
-            requested_oids.append(query["oid"])
-            first_comment = (query["pn"] - 1) * 20
+        return fake_api
+
+    def test_accepts_wbi_keys_from_logged_out_nav(self):
+        data = {
+            "wbi_img": {
+                "img_url": "https://i0.hdslb.com/wbi/img.png",
+                "sub_url": "https://i0.hdslb.com/wbi/sub.png",
+            }
+        }
+        payload = json.dumps({"code": -101, "data": data}).encode("utf-8")
+
+        def fake_urlopen(*_args, **_kwargs):
+            return BytesIO(payload)
+
+        with patch.object(dlpplayer, "urlopen", side_effect=fake_urlopen):
+            self.assertIsNone(
+                dlpplayer._bilibili_api_data(
+                    "https://api.bilibili.com/x/web-interface/nav", {}, "https://www.bilibili.com/"
+                )
+            )
+            self.assertEqual(
+                dlpplayer._bilibili_api_data(
+                    "https://api.bilibili.com/x/web-interface/nav",
+                    {},
+                    "https://www.bilibili.com/",
+                    allow_login_required=True,
+                ),
+                data,
+            )
+
+
+    def test_falls_back_to_legacy_comments_when_wbi_unavailable(self):
+        requested_sorts = []
+
+        def fake_api(endpoint, query, _referer, **_kwargs):
+            if endpoint.endswith("/x/web-interface/nav"):
+                return None
+            self.assertEqual(endpoint, "https://api.bilibili.com/x/v2/reply")
+            requested_sorts.append(query["sort"])
+            if query["pn"] == 1:
+                return {
+                    "replies": [
+                        {
+                            "content": {"message": "Fallback comment"},
+                            "member": {"uname": "Author"},
+                            "like": 29,
+                        }
+                    ]
+                }
+            return {"replies": []}
+
+        with patch.object(dlpplayer, "_bilibili_api_data", side_effect=fake_api):
+            comments = dlpplayer._fetch_bilibili_comments(
+                "https://www.bilibili.com/video/BV123",
+                {"id": "BV123", "_old_archive_ids": ["bilibili 123"]},
+            )
+
+        self.assertEqual(requested_sorts, [2, 2])
+        self.assertEqual([comment["text"] for comment in comments], ["Fallback comment"])
+
+    def test_signs_wbi_query(self):
+        with patch.object(dlpplayer.time, "time", return_value=1700000000):
+            signed = dlpplayer._bilibili_wbi_query(
+                {"foo": "bar"}, "0123456789abcdef0123456789abcdef"
+            )
+
+        self.assertEqual(
+            signed,
+            {
+                "foo": "bar",
+                "wts": "1700000000",
+                "w_rid": "2b78287a37e5bc5444c825d32513938e",
+            },
+        )
+
+    def test_fetches_up_to_one_hundred_hot_comments_by_cursor(self):
+        requested_offsets = []
+
+        def replies_for_page(offset, query):
+            requested_offsets.append(offset)
+            page_number = len(requested_offsets) - 1
+            first_comment = page_number * dlpplayer.BILIBILI_COMMENT_PAGE_SIZE
             return {
                 "replies": [
                     {
@@ -1591,27 +1773,119 @@ class BilibiliCommentFetchTests(unittest.TestCase):
                         "like": index + 1,
                     }
                     for index in range(first_comment, first_comment + 20)
-                ]
+                ],
+                "cursor": {
+                    "is_end": page_number == 4,
+                    "pagination_reply": {"next_offset": f"offset-{page_number + 1}"},
+                },
             }
 
-        with patch.object(dlpplayer, "_bilibili_api_data", side_effect=fake_api):
-            comments = dlpplayer._fetch_bilibili_comments(
+        with patch.object(
+            dlpplayer,
+            "_bilibili_api_data",
+            side_effect=self._fake_wbi_data(replies_for_page),
+        ):
+            raw_comments = dlpplayer._fetch_bilibili_comments(
                 "https://www.bilibili.com/video/BV123",
-                {
-                    "id": "BV123",
-                    "_old_archive_ids": ["bilibili 123_part1"],
-                },
+                {"id": "BV123", "_old_archive_ids": ["bilibili 123_part1"]},
             )
         info = video_info_from_ytdlp(
-            {"title": "Bilibili clip", "vcodec": "h264", "comments": comments}
+            {"title": "Bilibili clip", "vcodec": "h264", "comments": raw_comments}
         )
 
-        self.assertEqual(requested_pages, [1, 2, 3, 4, 5])
-        self.assertEqual(requested_oids, ["123"] * 5)
+        self.assertEqual(
+            requested_offsets,
+            ["", "offset-1", "offset-2", "offset-3", "offset-4"],
+        )
         self.assertEqual(len(info.comments), 100)
         self.assertEqual(
             [comment.like_count for comment in info.comments],
             list(range(100, 0, -1)),
+        )
+
+    def test_orders_hot_comments_by_replies_likes_and_date(self):
+        replies = [
+            {
+                "content": {"message": "29 likes, 21 replies"},
+                "like": 29,
+                "rcount": 21,
+                "ctime": 100,
+            },
+            {
+                "content": {"message": "45 likes, 90 replies"},
+                "like": 45,
+                "rcount": 90,
+                "ctime": 500,
+                "replies": [
+                    {
+                        "content": {"message": "189 likes, nested reply"},
+                        "like": 189,
+                        "rcount": 0,
+                        "ctime": 600,
+                    }
+                ],
+            },
+            {
+                "content": {"message": "45 likes, older tie"},
+                "like": 45,
+                "rcount": 3,
+                "ctime": 100,
+            },
+            {
+                "content": {"message": "45 likes, newer tie"},
+                "like": 45,
+                "rcount": 3,
+                "ctime": 500,
+            },
+        ]
+
+        def replies_for_page(_offset, _query):
+            return {
+                "replies": replies,
+                "cursor": {"is_end": True, "pagination_reply": {}},
+            }
+
+        with patch.object(
+            dlpplayer,
+            "_bilibili_api_data",
+            side_effect=self._fake_wbi_data(replies_for_page),
+        ):
+            raw_comments = dlpplayer._fetch_bilibili_comments(
+                "https://www.bilibili.com/video/BV123",
+                {"id": "BV123", "_old_archive_ids": ["bilibili 123"]},
+            )
+        info = video_info_from_ytdlp(
+            {"title": "Clip", "vcodec": "h264", "comments": raw_comments}
+        )
+
+        self.assertEqual(
+            [
+                (comment.text, comment.reply_count, comment.like_count, comment.created_at)
+                for comment in info.comments
+            ],
+            [
+                ("45 likes, 90 replies", 90, 45, 500),
+                ("29 likes, 21 replies", 21, 29, 100),
+                ("45 likes, newer tie", 3, 45, 500),
+                ("45 likes, older tie", 3, 45, 100),
+                ("189 likes, nested reply", 0, 189, 600),
+            ],
+        )
+
+    def test_comment_display_shows_author_date_replies_and_likes_together(self):
+        comment = dlpplayer.VideoComment(
+            "Comment", 29, "Author", reply_count=90, created_at=1
+        )
+        with patch.object(
+            dlpplayer.time,
+            "localtime",
+            return_value=(2026, 11, 9, 16, 6, 0, 0, 313, 0),
+        ):
+            display = dlpplayer._format_comment_display(comment)
+
+        self.assertEqual(
+            display,
+            "Author · 2026-11-09 16:06 · 90 replies · 29 likes\nComment\n\n",
         )
 
 
@@ -1675,6 +1949,25 @@ class VideoInformationTests(unittest.TestCase):
                 "A video description.",
             ),
         )
+
+    def test_bilibili_details_hide_uploader_and_engagement_summary(self):
+        info = video_info_from_ytdlp(
+            {
+                "title": "Bilibili clip",
+                "webpage_url": "https://www.bilibili.com/video/BV12d4n6zELQ",
+                "uploader": "Uploader",
+                "upload_date": "20261107",
+                "view_count": 38146,
+                "like_count": 811,
+                "comment_count": 740,
+            }
+        )
+
+        self.assertFalse(any("Uploader" in line for line in info.details))
+        self.assertFalse(any("views" in line for line in info.details))
+        self.assertFalse(any("comments" in line for line in info.details))
+        self.assertFalse(any("likes" in line for line in info.details))
+        self.assertFalse(any("2026-11-07" in line for line in info.details))
 
     def test_sorts_and_limits_ytdlp_comments_by_like_count(self):
         comments = [
