@@ -7,7 +7,7 @@ import unittest
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import mock_open, patch
+from unittest.mock import Mock, mock_open, patch
 
 import dlpplayer
 from dlpplayer import (
@@ -216,6 +216,133 @@ class HttpUrlTests(unittest.TestCase):
         with patch.object(dlpplayer, "launch_gui", return_value=0) as launch:
             self.assertEqual(dlpplayer.main([]), 0)
         launch.assert_called_once_with()
+
+class OpenRpcTests(unittest.TestCase):
+    def test_open_command_forwards_url_to_running_gui(self):
+        url = "https://www.youtube.com/watch?v=video"
+        args = create_parser().parse_args(["open", url])
+
+        with patch.object(
+            dlpplayer, "_send_rpc_request", return_value={"ok": True}
+        ) as send:
+            self.assertEqual(args.handler(args), 0)
+
+        send.assert_called_once_with({"method": "open", "sources": [url]})
+
+    def test_open_command_normalizes_playlist_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            playlist = Path(temp_dir) / "watch later.m3u8"
+            playlist.write_text("#EXTM3U\n", encoding="utf-8")
+            args = create_parser().parse_args(["open", str(playlist)])
+
+            with patch.object(
+                dlpplayer, "_send_rpc_request", return_value={"ok": True}
+            ) as send:
+                self.assertEqual(args.handler(args), 0)
+
+        send.assert_called_once_with(
+            {"method": "open", "sources": [str(playlist.resolve())]}
+        )
+
+    def test_open_command_starts_gui_when_rpc_is_unavailable(self):
+        url = "https://media.example/video"
+        args = create_parser().parse_args(["open", url])
+        process = SimpleNamespace(poll=lambda: None)
+
+        with patch.object(
+            dlpplayer,
+            "_send_rpc_request",
+            side_effect=[FileNotFoundError(), {"ok": True}],
+        ) as send:
+            with patch.object(
+                dlpplayer.subprocess, "Popen", return_value=process
+            ) as popen:
+                with patch.object(dlpplayer.time, "sleep"):
+                    self.assertEqual(args.handler(args), 0)
+
+        command = popen.call_args.args[0]
+        self.assertEqual(command[-2:], ["--open", url])
+        self.assertEqual(send.call_count, 2)
+
+    def test_rpc_open_is_queued_and_acknowledged_after_dispatch(self):
+        url = "https://media.example/video"
+
+        class MemoryConnection:
+            def __init__(self):
+                self.response = None
+                self.closed = False
+
+            def recv_bytes(self, maxlength):
+                self.asserted_maxlength = maxlength
+                return json.dumps({"method": "open", "sources": [url]}).encode()
+
+            def send_bytes(self, response):
+                self.response = response
+
+            def close(self):
+                self.closed = True
+
+        connection = MemoryConnection()
+        requests = queue.Queue()
+        worker = threading.Thread(
+            target=dlpplayer._handle_rpc_connection, args=(connection, requests)
+        )
+        worker.start()
+        request = requests.get(timeout=1)
+        self.assertEqual(request.sources, (url,))
+        self.assertEqual(
+            connection.asserted_maxlength, dlpplayer.RPC_MAX_MESSAGE_BYTES
+        )
+        request.response = {"ok": True}
+        request.completed.set()
+        worker.join(timeout=1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(json.loads(connection.response), {"ok": True})
+        self.assertTrue(connection.closed)
+
+    def test_gui_rpc_poller_schedules_and_dispatches_requests(self):
+        url = "https://media.example/video"
+        request = dlpplayer._RpcOpenRequest((url,))
+        requests = queue.Queue()
+        requests.put(request)
+        play_url = Mock()
+        play_local_files = Mock()
+
+        class FakeRoot:
+            def __init__(self):
+                self.callbacks = []
+
+            def after(self, delay, callback):
+                self.callbacks.append((delay, callback))
+
+        root = FakeRoot()
+        dlpplayer._start_rpc_poller(root, requests, play_url, play_local_files)
+
+        self.assertEqual(len(root.callbacks), 1)
+        delay, poll = root.callbacks.pop(0)
+        self.assertEqual(delay, 50)
+        poll()
+
+        self.assertTrue(request.completed.is_set())
+        self.assertEqual(request.response, {"ok": True})
+        play_url.assert_called_once_with(url)
+        play_local_files.assert_not_called()
+        self.assertEqual(len(root.callbacks), 1)
+        self.assertEqual(root.callbacks[0][0], 50)
+
+    def test_local_playlist_dispatches_to_gui_playlist_handler(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            playlist = Path(temp_dir) / "episodes.m3u"
+            playlist.write_text("#EXTM3U\n", encoding="utf-8")
+            sources = dlpplayer._normalize_open_sources([str(playlist)])
+            play_url = Mock()
+            play_local_files = Mock()
+
+            dlpplayer._dispatch_open_sources(sources, play_url, play_local_files)
+
+        play_url.assert_not_called()
+        play_local_files.assert_called_once_with((playlist.resolve(),))
 
 
 class YtDlpRuntimeCompatibilityTests(unittest.TestCase):

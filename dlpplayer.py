@@ -19,6 +19,7 @@ import threading
 import time
 import uuid
 import zlib
+from multiprocessing.connection import Client, Listener
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -509,15 +510,208 @@ def build_mpv_url_command(
         cookie_browser=cookie_browser,
     )
 
-def _mpv_ipc_server_path() -> str:
+def _user_session_key() -> str:
     home = str(Path.home())
     if os.name == "nt":
         home = home.casefold()
-    user_key = uuid.uuid5(uuid.NAMESPACE_URL, home).hex[:16]
-    name = f"dlpplayer-{user_key}"
+    return uuid.uuid5(uuid.NAMESPACE_URL, home).hex[:16]
+
+
+def _mpv_ipc_server_path() -> str:
+    name = f"dlpplayer-{_user_session_key()}"
     if os.name == "nt":
         return rf"\\.\pipe\{name}"
     return str(Path(tempfile.gettempdir()) / f"{name}.sock")
+
+
+RPC_MAX_MESSAGE_BYTES = 64 * 1024
+RPC_MAX_SOURCES = 32
+RPC_REQUEST_TIMEOUT = 10
+
+
+def rpc_endpoint() -> tuple[str, str]:
+    """Return this user's local RPC address and multiprocessing family."""
+    name = f"dlpplayer-rpc-{_user_session_key()}"
+    if os.name == "nt":
+        return rf"\\.\pipe\{name}", "AF_PIPE"
+    return str(Path(tempfile.gettempdir()) / f"{name}.sock"), "AF_UNIX"
+
+
+def _normalize_open_sources(sources: object) -> tuple[str, ...]:
+    if not isinstance(sources, (list, tuple)) or not sources:
+        raise ValueError("Provide one or more HTTP(S) URLs or existing local files.")
+    if len(sources) > RPC_MAX_SOURCES:
+        raise ValueError(f"A request may contain at most {RPC_MAX_SOURCES} sources.")
+
+    normalized: list[str] = []
+    for source in sources:
+        if not isinstance(source, str) or not source.strip():
+            raise ValueError("Each source must be a non-empty URL or file path.")
+        source = source.strip()
+        if len(source) > RPC_MAX_MESSAGE_BYTES or "\0" in source:
+            raise ValueError("A source is invalid or too long.")
+        if is_http_url(source):
+            normalized.append(source)
+            continue
+        try:
+            path = Path(source).expanduser()
+            if not path.is_file():
+                raise ValueError(f"Local media file was not found: {path}")
+            normalized.append(str(path.resolve()))
+        except OSError as error:
+            raise ValueError(f"Could not access local media file: {source}") from error
+
+    urls = tuple(source for source in normalized if is_http_url(source))
+    if urls and len(normalized) != 1:
+        raise ValueError("Open a URL by itself; URLs cannot be mixed with local files.")
+    playlists = tuple(
+        source
+        for source in normalized
+        if Path(source).suffix.casefold() in {".m3u", ".m3u8"}
+    )
+    if playlists and len(normalized) != 1:
+        raise ValueError("Open a playlist file by itself.")
+    return tuple(normalized)
+
+
+def _dispatch_open_sources(
+    sources: tuple[str, ...],
+    play_url: Callable[[str], None],
+    play_local_files: Callable[[tuple[Path, ...]], None],
+) -> None:
+    if is_http_url(sources[0]):
+        play_url(sources[0])
+    else:
+        play_local_files(tuple(Path(source) for source in sources))
+
+
+@dataclass
+class _RpcOpenRequest:
+    sources: tuple[str, ...]
+    completed: threading.Event = field(default_factory=threading.Event)
+    response: dict[str, object] = field(default_factory=dict)
+
+
+def _handle_rpc_connection(connection, requests: queue.Queue[_RpcOpenRequest]) -> None:
+    response: dict[str, object]
+    try:
+        payload = json.loads(connection.recv_bytes(maxlength=RPC_MAX_MESSAGE_BYTES))
+        if not isinstance(payload, dict):
+            raise ValueError("RPC request must be a JSON object.")
+        method = payload.get("method")
+        if method == "ping":
+            response = {"ok": True}
+        elif method == "open":
+            request = _RpcOpenRequest(_normalize_open_sources(payload.get("sources")))
+            requests.put(request)
+            if request.completed.wait(RPC_REQUEST_TIMEOUT):
+                response = request.response or {"ok": True}
+            else:
+                response = {"ok": False, "error": "DLPPlayer did not process the request."}
+        else:
+            raise ValueError("RPC method must be 'open' or 'ping'.")
+    except (UnicodeDecodeError, ValueError, TypeError) as error:
+        response = {"ok": False, "error": str(error)}
+    except (EOFError, OSError):
+        response = {"ok": False, "error": "Invalid or incomplete RPC request."}
+    try:
+        connection.send_bytes(json.dumps(response, ensure_ascii=False).encode("utf-8"))
+    except (EOFError, OSError):
+        pass
+    finally:
+        connection.close()
+
+
+def _serve_rpc(listener, requests: queue.Queue[_RpcOpenRequest]) -> None:
+    while True:
+        try:
+            connection = listener.accept()
+        except (EOFError, OSError):
+            return
+        threading.Thread(
+            target=_handle_rpc_connection,
+            args=(connection, requests),
+            daemon=True,
+        ).start()
+
+def _start_rpc_poller(
+    root,
+    requests: queue.Queue[_RpcOpenRequest],
+    play_url: Callable[[str], None],
+    play_local_files: Callable[[tuple[Path, ...]], None],
+) -> None:
+    def poll_rpc_requests() -> None:
+        while True:
+            try:
+                request = requests.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                _dispatch_open_sources(request.sources, play_url, play_local_files)
+                request.response = {"ok": True}
+            except Exception as error:
+                request.response = {"ok": False, "error": str(error)}
+            finally:
+                request.completed.set()
+        root.after(50, poll_rpc_requests)
+
+    root.after(50, poll_rpc_requests)
+
+
+def _send_rpc_request(payload: dict[str, object]) -> dict[str, object]:
+    address, family = rpc_endpoint()
+    with Client(address, family=family) as connection:
+        connection.send_bytes(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        response = json.loads(connection.recv_bytes(maxlength=RPC_MAX_MESSAGE_BYTES))
+    if not isinstance(response, dict) or not isinstance(response.get("ok"), bool):
+        raise ValueError("DLPPlayer returned an invalid RPC response.")
+    return response
+
+
+def open_media(args: argparse.Namespace) -> int:
+    try:
+        sources = _normalize_open_sources(args.sources)
+    except ValueError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 2
+
+    request = {"method": "open", "sources": list(sources)}
+    try:
+        response = _send_rpc_request(request)
+    except (EOFError, OSError):
+        command = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "gui",
+            "--open",
+            *sources,
+        ]
+        try:
+            process = subprocess.Popen(
+                command, cwd=str(Path(__file__).resolve().parent)
+            )
+        except OSError as error:
+            print(f"Error: could not start DLPPlayer: {error}", file=sys.stderr)
+            return 1
+        deadline = time.monotonic() + RPC_REQUEST_TIMEOUT
+        while time.monotonic() < deadline and process.poll() is None:
+            try:
+                if _send_rpc_request({"method": "ping"})["ok"]:
+                    return 0
+            except (EOFError, OSError):
+                pass
+            time.sleep(0.1)
+        print("Error: DLPPlayer RPC server did not start.", file=sys.stderr)
+        return 1
+
+    if response["ok"]:
+        return 0
+    print(
+        f"Error: {response.get('error', 'DLPPlayer rejected the request.')}",
+        file=sys.stderr,
+    )
+    return 1
+
 
 
 def _send_mpv_ipc_command(server: str, command: list[object]) -> bool:
@@ -2370,6 +2564,15 @@ def play(args: argparse.Namespace) -> int:
 
 
 def launch_gui(_args: argparse.Namespace | None = None) -> int:
+    initial_sources: tuple[str, ...] = ()
+    raw_initial_sources = getattr(_args, "open_sources", None)
+    if raw_initial_sources:
+        try:
+            initial_sources = _normalize_open_sources(raw_initial_sources)
+        except ValueError as error:
+            print(f"Error: {error}", file=sys.stderr)
+            return 2
+    rpc_requests: queue.Queue[_RpcOpenRequest] = queue.Queue()
     try:
         import tkinter as tk
         from tkinter import filedialog, messagebox, scrolledtext, ttk
@@ -2383,6 +2586,38 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         )
         print(f"Error: {error}", file=sys.stderr)
         return 1
+
+    address, family = rpc_endpoint()
+    rpc_listener = None
+    try:
+        rpc_listener = Listener(address=address, family=family)
+        if family == "AF_UNIX":
+            os.chmod(address, 0o600)
+    except OSError as error:
+        if rpc_listener is not None:
+            rpc_listener.close()
+        try:
+            _send_rpc_request({"method": "ping"})
+        except (EOFError, OSError, ValueError):
+            print(f"Error: could not start DLPPlayer RPC server: {error}", file=sys.stderr)
+            return 1
+        if initial_sources:
+            response = _send_rpc_request(
+                {"method": "open", "sources": list(initial_sources)}
+            )
+            if not response["ok"]:
+                print(
+                    f"Error: {response.get('error', 'DLPPlayer rejected the request.')}",
+                    file=sys.stderr,
+                )
+                return 1
+        return 0
+
+    threading.Thread(
+        target=_serve_rpc,
+        args=(rpc_listener, rpc_requests),
+        daemon=True,
+    ).start()
 
     root = TkinterDnD.Tk()
 
@@ -4075,7 +4310,14 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
     fit_window_height()
     root.after(100, poll_playlist_results)
     root.after(100, poll_radio_mix_results)
+
+    _start_rpc_poller(root, rpc_requests, play_url, play_local_files)
+    if initial_sources:
+        root.after(0, _dispatch_open_sources, initial_sources, play_url, play_local_files)
     root.mainloop()
+    rpc_listener.close()
+    if family == "AF_UNIX":
+        Path(address).unlink(missing_ok=True)
     playlist_tempdir.cleanup()
     return 0
 
@@ -4085,7 +4327,26 @@ def create_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     gui_parser = commands.add_parser("gui", help="Open the drag-and-drop player window.")
+    gui_parser.add_argument(
+        "--open",
+        nargs="+",
+        dest="open_sources",
+        metavar="SOURCE",
+        help="open URLs or local files/playlists as the GUI starts",
+    )
     gui_parser.set_defaults(handler=launch_gui)
+
+    open_parser = commands.add_parser(
+        "open", help="Open URLs or local files/playlists in DLPPlayer."
+    )
+    open_parser.add_argument(
+        "sources",
+        nargs="+",
+        metavar="SOURCE",
+        help="HTTP(S) URL, local media file, or local playlist",
+    )
+    open_parser.set_defaults(handler=open_media)
+
 
     download_parser = commands.add_parser(
         "download", help="Download one video URL supported by yt-dlp."

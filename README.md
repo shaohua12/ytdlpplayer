@@ -58,6 +58,10 @@ independently without DLPPlayer's IPC endpoint cannot be attached. `RD...` radio
 mixes use ten-item batches; each batch plays in order, and the next batch loads
 when MPV finishes. Use the stop button to end the mix; closing MPV also ends the current
 batch before continuing.
+
+A per-user RPC endpoint enforces one GUI instance: launching DLPPlayer again does
+not open another window, and `open` sends the source to the existing GUI.
+
 When yt-dlp provides titles, mpv's playlist displays them instead of raw watch
 URLs, including items that have not started playing yet.
 
@@ -71,6 +75,12 @@ press the play button.
 
 Single-video URLs play with the same button.
 
+
+Use `python .\dlpplayer.py open <SOURCE> [SOURCE ...]` to send an HTTP(S) URL,
+local media file, or local `.m3u`/`.m3u8` playlist to DLPPlayer. It reuses the
+running GUI when available and starts the GUI with the requested source otherwise.
+Multiple local media files can be opened together; URLs and playlist files must
+be opened alone.
 The window title prompts "Drop a video, playlist, or link."
 The information panel shows the video title prominently and hides when mpv exits.
 Drag-select any part of the title or metadata and press Ctrl+C to copy it.
@@ -109,6 +119,7 @@ members-only errors explain the browser account requirement.
 ## Command-line usage
 
 ```powershell
+python .\dlpplayer.py open <URL|FILE|PLAYLIST> [FILE ...]
 python .\dlpplayer.py download <URL> [options]
 python .\dlpplayer.py play <FILE> [--mpv PATH]
 ```
@@ -124,7 +135,42 @@ starts MPV in idle mode; GUI and CLI playback reuse it across app invocations.
 Commands return after handing media to MPV. `--mpv` is used only when DLPPlayer
 needs to start MPV.
 
+`open` accepts one HTTP(S) URL, one local media file or playlist, or multiple
+local media files. It forwards the request to the running DLPPlayer GUI; if no
+GUI is running, it starts one with the supplied source. The existing `play`
+command remains for direct local-file playback through MPV.
+
+### Local RPC
+
+The GUI accepts local JSON RPC requests using the same endpoint as the CLI
+`open` command. On Windows this is a per-user named pipe; other platforms use a
+per-user Unix-domain socket. `rpc_endpoint()` returns its address and family.
+Requests use `multiprocessing.connection` byte frames containing JSON (not
+Python pickle):
+
+```python
+import json
+from multiprocessing.connection import Client
+
+from dlpplayer import rpc_endpoint
+
+address, family = rpc_endpoint()
+with Client(address, family=family) as rpc:
+    rpc.send_bytes(json.dumps({
+        "method": "open",
+        "sources": ["https://www.youtube.com/watch?v=OFrsybPMGSw"],
+    }).encode("utf-8"))
+    response = json.loads(rpc.recv_bytes())
+```
+
+`open` requires a non-empty `sources` array of HTTP(S) URLs or existing local
+file paths. A request may contain one URL or playlist, or multiple local media
+files. Responses contain `ok` and include `error` when rejected. The `ping`
+method returns `{"ok": true}` when the GUI RPC endpoint is ready.
+`ok: true` means the request reached the GUI; playback errors appear in its status panel.
+
 ```powershell
+python .\dlpplayer.py open "https://www.youtube.com/watch?v=OFrsybPMGSw"
 python .\dlpplayer.py download "https://www.bilibili.com/video/BV..." --play
 python .\dlpplayer.py download "https://www.youtube.com/watch?v=..." -o "D:\Videos" -f "bv*[height<=480]+ba/b"
 python .\dlpplayer.py play "D:\Videos\video.mp4"
