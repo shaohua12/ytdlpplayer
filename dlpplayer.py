@@ -2783,7 +2783,7 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         comments_frame,
         height=20,
         wrap="word",
-        font=("Segoe UI", 9),
+        font=("Segoe UI", 11),
         state="disabled",
     )
     comments_text.pack(fill="both", expand=True)
