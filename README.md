@@ -101,8 +101,9 @@ enabled while media is playing.
 Hover over any button to see its action tooltip.
 The panel shows up to 100 available URL comments. Bilibili uses its hot-comment
 feed, ranked by reply count, then likes, then newest date; each row shows the
-author, post time, any nonzero reply/like counts, and text. Bilibili and YouTube
-retrieval are capped at 100; other sites are not forced to fetch comments.
+author, post time, nonzero reply counts marked with 💬 and like counts marked with
+red ♥, and text. Bilibili and YouTube retrieval are capped at 100; other sites are
+not forced to fetch comments.
 Video details appear before the separate comments fetch completes. The
 comments box is omitted when none are available.
 The window starts 20 pixels from the desktop's top and right edges, shrinks to a

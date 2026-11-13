@@ -1970,7 +1970,7 @@ class BilibiliCommentFetchTests(unittest.TestCase):
             ],
         )
 
-    def test_comment_display_shows_author_date_replies_and_likes_together(self):
+    def test_comment_display_shows_author_date_reply_and_like_glyphs(self):
         comment = dlpplayer.VideoComment(
             "Comment", 29, "Author", reply_count=90, created_at=1
         )
@@ -1983,13 +1983,13 @@ class BilibiliCommentFetchTests(unittest.TestCase):
 
         self.assertEqual(
             display,
-            "Author · 2026-11-09 16:06 · 90 replies · 29 likes\nComment\n\n",
+            "Author · 2026-11-09 16:06 · 💬 90 · ♥ 29\nComment\n\n",
         )
 
     def test_comment_display_hides_zero_reply_and_like_counts(self):
         cases = (
-            ("No replies", 0, 3, "Author · 3 likes\nNo replies\n\n"),
-            ("No likes", 2, 0, "Author · 2 replies\nNo likes\n\n"),
+            ("No replies", 0, 3, "Author · ♥ 3\nNo replies\n\n"),
+            ("No likes", 2, 0, "Author · 💬 2\nNo likes\n\n"),
             ("No counts", 0, 0, "Author\nNo counts\n\n"),
             ("No author or counts", 0, 0, "No author or counts\n\n"),
         )

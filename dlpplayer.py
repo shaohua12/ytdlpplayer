@@ -1833,9 +1833,9 @@ def _comment_details_line(comment: VideoComment) -> str:
     if posted_at:
         details.append(posted_at)
     if comment.reply_count > 0:
-        details.append(f"{comment.reply_count:,} replies")
+        details.append(f"💬 {comment.reply_count:,}")
     if comment.like_count > 0:
-        details.append(f"{comment.like_count:,} likes")
+        details.append(f"♥ {comment.like_count:,}")
     return " · ".join(details)
 
 
@@ -2787,6 +2787,11 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         state="disabled",
     )
     comments_text.pack(fill="both", expand=True)
+    comments_text.tag_configure(
+        "comment_like",
+        foreground="#d32f2f",
+        font=("Segoe UI Symbol", 14),
+    )
     metadata_results: queue.Queue[
         tuple[int, VideoInfo | None, str | None]
     ] = queue.Queue()
@@ -2818,7 +2823,17 @@ def launch_gui(_args: argparse.Namespace | None = None) -> int:
         comments_text.configure(state="normal")
         comments_text.delete("1.0", tk.END)
         for comment in comments:
-            comments_text.insert(tk.END, _format_comment_display(comment))
+            display = _format_comment_display(comment)
+            start = comments_text.index("end-1c")
+            comments_text.insert("end-1c", display)
+            if comment.like_count > 0:
+                header_end = display.index("\n")
+                heart_start = display.index("♥", 0, header_end)
+                comments_text.tag_add(
+                    "comment_like",
+                    f"{start}+{heart_start}c",
+                    f"{start}+{heart_start + len('♥')}c",
+                )
         comments_text.configure(state="disabled")
         if comments:
             comments_frame.pack(fill="x", pady=(8, 0))
