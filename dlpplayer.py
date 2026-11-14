@@ -73,6 +73,7 @@ class AppSettings:
     python_library_path: Path | None = None
     radio_mix_batch_size: int = DEFAULT_RADIO_MIX_BATCH_SIZE
     cookie_browser: str = DEFAULT_COOKIE_BROWSER
+    last_successful_cookie_browser: str | None = None
 
     @property
     def video_format(self) -> str:
@@ -106,6 +107,10 @@ def _settings_path_value(
     if not candidate.is_absolute():
         candidate = settings_path.resolve().parent / candidate
     return candidate
+
+
+def _cookie_browser_name(browser: str) -> str:
+    return browser.split("+", 1)[0].split(":", 1)[0].casefold()
 
 
 def load_settings(settings_path: Path = SETTINGS_PATH) -> AppSettings:
@@ -162,10 +167,28 @@ def load_settings(settings_path: Path = SETTINGS_PATH) -> AppSettings:
     else:
         cookie_browser = cookie_browser.strip().casefold()
 
+    last_successful_cookie_browser = data.get("last_successful_cookie_browser")
+    if last_successful_cookie_browser is not None:
+        if (
+            not isinstance(last_successful_cookie_browser, str)
+            or not last_successful_cookie_browser.strip()
+        ):
+            print(
+                f"Warning: last_successful_cookie_browser in {settings_path} must be a non-empty string or null. "
+                "Ignoring the cached browser.",
+                file=sys.stderr,
+            )
+            last_successful_cookie_browser = None
+        else:
+            last_successful_cookie_browser = _cookie_browser_name(
+                last_successful_cookie_browser.strip()
+            )
+
     return AppSettings(
         max_allowed_resolution=max_resolution,
         radio_mix_batch_size=radio_mix_batch_size,
         cookie_browser=cookie_browser,
+        last_successful_cookie_browser=last_successful_cookie_browser,
         yt_dlp_path=_settings_path_value(data, "yt_dlp_path", YTDLP_DEFAULT, settings_path),
         mpv_path=_settings_path_value(data, "mpv_path", MPV_DEFAULT, settings_path),
         ffmpeg_path=_settings_path_value(data, "ffmpeg_path", FFMPEG_DEFAULT, settings_path),
@@ -197,8 +220,77 @@ FFMPEG_DEFAULT = SETTINGS.ffmpeg_path
 NODE_DEFAULT = SETTINGS.node_path
 RADIO_MIX_BATCH_SIZE = SETTINGS.radio_mix_batch_size
 COOKIE_BROWSER = SETTINGS.cookie_browser
+LAST_SUCCESSFUL_COOKIE_BROWSER = SETTINGS.last_successful_cookie_browser
+_COOKIE_BROWSER_CACHE_LOCK = threading.Lock()
 VIDEO_FORMAT_DEFAULT = SETTINGS.video_format
 _add_python_library_path(SETTINGS.python_library_path)
+
+
+def _cache_last_successful_cookie_browser(
+    browser: str | None, *, expected_browser: str | None = None
+) -> None:
+    global LAST_SUCCESSFUL_COOKIE_BROWSER
+
+    with _COOKIE_BROWSER_CACHE_LOCK:
+        if (
+            expected_browser is not None
+            and LAST_SUCCESSFUL_COOKIE_BROWSER != expected_browser
+        ):
+            return
+        LAST_SUCCESSFUL_COOKIE_BROWSER = (
+            _cookie_browser_name(browser) if browser else None
+        )
+        settings_path = SETTINGS_PATH
+        try:
+            data = json.loads(settings_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            data = {}
+        except (OSError, json.JSONDecodeError) as error:
+            print(
+                f"Warning: could not update {settings_path}: {error}.",
+                file=sys.stderr,
+            )
+            return
+        if not isinstance(data, dict):
+            print(
+                f"Warning: could not update {settings_path}: expected a JSON object.",
+                file=sys.stderr,
+            )
+            return
+
+        if browser:
+            data["last_successful_cookie_browser"] = LAST_SUCCESSFUL_COOKIE_BROWSER
+        else:
+            if "last_successful_cookie_browser" not in data:
+                return
+            data.pop("last_successful_cookie_browser")
+
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=settings_path.parent,
+                prefix=f"{settings_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary_file:
+                temporary_path = Path(temporary_file.name)
+                json.dump(data, temporary_file, indent=2)
+                temporary_file.write("\n")
+            os.replace(temporary_path, settings_path)
+            temporary_path = None
+        except OSError as error:
+            print(
+                f"Warning: could not update {settings_path}: {error}.",
+                file=sys.stderr,
+            )
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink()
+                except OSError:
+                    pass
 
 
 URL_PATTERN = re.compile(r"https?://[^\s{}<>\"']+", re.IGNORECASE)
@@ -852,7 +944,7 @@ def _chromium_uses_app_bound_encryption(root: Path) -> bool:
 
 
 def _cookie_browser_usable(browser: str) -> bool:
-    name = browser.split("+", 1)[0].split(":", 1)[0].casefold()
+    name = _cookie_browser_name(browser)
     if os.name != "nt":
         return True
     if name == "firefox":
@@ -880,13 +972,21 @@ def _cookie_browser_usable(browser: str) -> bool:
     return True
 
 
-def _usable_cookie_browser(preferred: str = COOKIE_BROWSER) -> str | None:
-    candidates = [preferred]
-    candidates.extend(
-        browser
-        for browser in YTDLP_COOKIE_BROWSER_ORDER
-        if browser.casefold() != preferred.split(":", 1)[0].casefold()
-    )
+def _usable_cookie_browser(preferred: str | None = None) -> str | None:
+    candidates = []
+    seen = set()
+    for browser in (
+        preferred,
+        LAST_SUCCESSFUL_COOKIE_BROWSER,
+        COOKIE_BROWSER,
+        *YTDLP_COOKIE_BROWSER_ORDER,
+    ):
+        if browser is None:
+            continue
+        browser_name = _cookie_browser_name(browser)
+        if browser_name not in seen:
+            candidates.append(browser)
+            seen.add(browser_name)
     for browser in candidates:
         if _cookie_browser_usable(browser):
             return browser
@@ -1166,7 +1266,10 @@ def build_episode_metadata_command(
 
 
 def _run_ytdlp_with_browser_fallback(
-    command: list[str], **run_options: object
+    command: list[str],
+    *,
+    preferred_browser: str | None = None,
+    **run_options: object,
 ) -> subprocess.CompletedProcess:
     try:
         cookie_index = command.index("--cookies-from-browser")
@@ -1174,15 +1277,40 @@ def _run_ytdlp_with_browser_fallback(
         return subprocess.run(command, **run_options)
 
     requested_browser = command[cookie_index + 1]
-    browser_name = requested_browser.split("+", 1)[0].split(":", 1)[0].casefold()
-    browser_sources = [requested_browser]
-    browser_sources.extend(
-        browser
-        for browser in YTDLP_COOKIE_BROWSER_ORDER
-        if browser != browser_name
+    requested_browser_name = _cookie_browser_name(requested_browser)
+    cached_browser = LAST_SUCCESSFUL_COOKIE_BROWSER
+    cached_browser_name = (
+        _cookie_browser_name(cached_browser) if cached_browser is not None else None
     )
+    if preferred_browser is not None:
+        first_browser = (
+            requested_browser
+            if requested_browser_name == _cookie_browser_name(preferred_browser)
+            else preferred_browser
+        )
+    elif cached_browser is not None:
+        first_browser = (
+            requested_browser
+            if requested_browser_name == cached_browser_name
+            else cached_browser
+        )
+    else:
+        first_browser = requested_browser
+
+    browser_sources = [first_browser]
+    seen_browser_names = {_cookie_browser_name(first_browser)}
+    for browser in YTDLP_COOKIE_BROWSER_ORDER:
+        browser_name = _cookie_browser_name(browser)
+        if browser_name in seen_browser_names:
+            continue
+        browser_sources.append(
+            requested_browser if browser_name == requested_browser_name else browser
+        )
+        seen_browser_names.add(browser_name)
+    if requested_browser_name not in seen_browser_names:
+        browser_sources.append(requested_browser)
+
     first_result = None
-    result = None
     for browser in browser_sources:
         attempt = command.copy()
         attempt[cookie_index + 1] = browser
@@ -1190,7 +1318,16 @@ def _run_ytdlp_with_browser_fallback(
         if first_result is None:
             first_result = result
         if result.returncode == 0:
+            _cache_last_successful_cookie_browser(browser)
             return result
+        if (
+            cached_browser_name is not None
+            and _cookie_browser_name(browser) == cached_browser_name
+        ):
+            _cache_last_successful_cookie_browser(
+                None, expected_browser=cached_browser_name
+            )
+            cached_browser_name = None
     assert first_result is not None
     return first_result
 
@@ -2530,7 +2667,11 @@ def download(args: argparse.Namespace) -> int:
                 node_runtime,
                 args.cookie_browser or COOKIE_BROWSER,
             )
-            result = _run_ytdlp_with_browser_fallback(command, check=False)
+            result = _run_ytdlp_with_browser_fallback(
+                command,
+                preferred_browser=args.cookie_browser,
+                check=False,
+            )
             if result.returncode:
                 return result.returncode
 
@@ -4372,8 +4513,10 @@ def create_parser() -> argparse.ArgumentParser:
     )
     download_parser.add_argument(
         "--cookie-browser",
-        help="browser to read cookies from (default: the cookie_browser setting, "
-        "Brave)",
+        help=(
+            "browser to read cookies from (default: cached success or the "
+            "cookie_browser setting)"
+        ),
     )
     download_parser.add_argument(
         "--cookie-profile",

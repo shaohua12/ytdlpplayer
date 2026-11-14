@@ -144,6 +144,19 @@ class SettingsTests(unittest.TestCase):
                 )
 
 
+    def test_reads_last_successful_cookie_browser(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = Path(temp_dir) / "dlpplayer.json"
+            settings_path.write_text(
+                '{"last_successful_cookie_browser": "Edge:Profile 1"}',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                load_settings(settings_path).last_successful_cookie_browser,
+                "edge",
+            )
+
 class HttpUrlTests(unittest.TestCase):
 
     def test_accepts_bilibili_video_and_short_links(self):
@@ -503,6 +516,10 @@ class YtDlpCookieFallbackTests(unittest.TestCase):
         failure = SimpleNamespace(returncode=1)
         success = SimpleNamespace(returncode=0)
         with patch.object(
+            dlpplayer, "LAST_SUCCESSFUL_COOKIE_BROWSER", None
+        ), patch.object(
+            dlpplayer, "_cache_last_successful_cookie_browser"
+        ), patch.object(
             dlpplayer.subprocess,
             "run",
             side_effect=[failure, failure, failure, success],
@@ -532,6 +549,10 @@ class YtDlpCookieFallbackTests(unittest.TestCase):
         )
         other_failure = SimpleNamespace(returncode=1, stderr="browser unavailable")
         with patch.object(
+            dlpplayer, "LAST_SUCCESSFUL_COOKIE_BROWSER", None
+        ), patch.object(
+            dlpplayer, "_cache_last_successful_cookie_browser"
+        ), patch.object(
             dlpplayer.subprocess,
             "run",
             side_effect=[brave_failure, other_failure, other_failure, other_failure],
@@ -539,6 +560,101 @@ class YtDlpCookieFallbackTests(unittest.TestCase):
             result = dlpplayer._run_ytdlp_with_browser_fallback(command)
 
         self.assertIs(result, brave_failure)
+
+    def test_caches_successful_browser_and_uses_it_first_next_time(self):
+        command = [
+            "yt-dlp.exe",
+            "--cookies-from-browser",
+            "chrome",
+            "https://www.youtube.com/watch?v=video",
+        ]
+        failure = SimpleNamespace(returncode=1)
+        success = SimpleNamespace(returncode=0)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = Path(temp_dir) / "dlpplayer.json"
+            settings_path.write_text('{"cookie_browser":"chrome"}', encoding="utf-8")
+            with patch.object(dlpplayer, "SETTINGS_PATH", settings_path), patch.object(
+                dlpplayer, "LAST_SUCCESSFUL_COOKIE_BROWSER", None
+            ), patch.object(
+                dlpplayer.subprocess, "run", side_effect=[failure, success, success]
+            ) as run:
+                first_result = dlpplayer._run_ytdlp_with_browser_fallback(command)
+                second_result = dlpplayer._run_ytdlp_with_browser_fallback(command)
+
+            attempted_sources = [
+                call.args[0][call.args[0].index("--cookies-from-browser") + 1]
+                for call in run.call_args_list
+            ]
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+
+        self.assertIs(first_result, success)
+        self.assertIs(second_result, success)
+        self.assertEqual(attempted_sources, ["chrome", "edge", "edge"])
+        self.assertEqual(settings["cookie_browser"], "chrome")
+        self.assertEqual(settings["last_successful_cookie_browser"], "edge")
+
+    def test_failed_cached_browser_resets_to_default_order(self):
+        command = [
+            "yt-dlp.exe",
+            "--cookies-from-browser",
+            "firefox:work-profile",
+            "https://www.youtube.com/watch?v=video",
+        ]
+        failure = SimpleNamespace(returncode=1)
+        success = SimpleNamespace(returncode=0)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = Path(temp_dir) / "dlpplayer.json"
+            settings_path.write_text(
+                '{"last_successful_cookie_browser":"edge"}', encoding="utf-8"
+            )
+            with patch.object(dlpplayer, "SETTINGS_PATH", settings_path), patch.object(
+                dlpplayer, "LAST_SUCCESSFUL_COOKIE_BROWSER", "edge"
+            ), patch.object(
+                dlpplayer.subprocess, "run", side_effect=[failure, failure, success]
+            ) as run:
+                result = dlpplayer._run_ytdlp_with_browser_fallback(command)
+
+            attempted_sources = [
+                call.args[0][call.args[0].index("--cookies-from-browser") + 1]
+                for call in run.call_args_list
+            ]
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+
+        self.assertIs(result, success)
+        self.assertEqual(
+            attempted_sources, ["edge", "chrome", "firefox:work-profile"]
+        )
+        self.assertEqual(settings["last_successful_cookie_browser"], "firefox")
+
+    def test_explicit_browser_overrides_cache_and_keeps_profile(self):
+        command = [
+            "yt-dlp.exe",
+            "--cookies-from-browser",
+            "firefox:work-profile",
+            "https://www.youtube.com/watch?v=video",
+        ]
+        success = SimpleNamespace(returncode=0)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = Path(temp_dir) / "dlpplayer.json"
+            settings_path.write_text(
+                '{"last_successful_cookie_browser":"edge"}', encoding="utf-8"
+            )
+            with patch.object(dlpplayer, "SETTINGS_PATH", settings_path), patch.object(
+                dlpplayer, "LAST_SUCCESSFUL_COOKIE_BROWSER", "edge"
+            ), patch.object(
+                dlpplayer.subprocess, "run", return_value=success
+            ) as run:
+                result = dlpplayer._run_ytdlp_with_browser_fallback(
+                    command, preferred_browser="firefox"
+                )
+
+            attempted_sources = [
+                call.args[0][call.args[0].index("--cookies-from-browser") + 1]
+                for call in run.call_args_list
+            ]
+
+        self.assertIs(result, success)
+        self.assertEqual(attempted_sources, ["firefox:work-profile"])
 
     def test_does_not_fallback_when_cookies_are_disabled(self):
         command = ["yt-dlp.exe", "--skip-download", "https://media.example/video"]
@@ -1110,6 +1226,18 @@ class VideoInfoErrorMessageTests(unittest.TestCase):
 
 
 class VideoInfoCommandTests(unittest.TestCase):
+    def setUp(self):
+        cache_state = patch.object(
+            dlpplayer, "LAST_SUCCESSFUL_COOKIE_BROWSER", None
+        )
+        cache_state.start()
+        self.addCleanup(cache_state.stop)
+        cache_writer = patch.object(
+            dlpplayer, "_cache_last_successful_cookie_browser"
+        )
+        cache_writer.start()
+        self.addCleanup(cache_writer.stop)
+
     def test_separates_video_info_from_bounded_top_comments(self):
         url = "https://youtu.be/BaW_jenozKc"
         command = build_video_info_command(
@@ -1262,7 +1390,13 @@ class VideoInfoCommandTests(unittest.TestCase):
             '"like_count":8}]}',
             stderr="",
         )
-        with patch.object(dlpplayer.subprocess, "run", return_value=result) as run:
+        with patch.object(
+            dlpplayer, "LAST_SUCCESSFUL_COOKIE_BROWSER", None
+        ), patch.object(
+            dlpplayer, "_cache_last_successful_cookie_browser"
+        ), patch.object(
+            dlpplayer.subprocess, "run", return_value=result
+        ) as run:
             comments = dlpplayer.fetch_youtube_video_comments(
                 "yt-dlp.exe", "https://youtu.be/video", "node.exe"
             )
@@ -1279,12 +1413,15 @@ class VideoInfoCommandTests(unittest.TestCase):
             stderr="",
         )
         with patch.object(
+            dlpplayer, "LAST_SUCCESSFUL_COOKIE_BROWSER", None
+        ), patch.object(
+            dlpplayer, "_cache_last_successful_cookie_browser"
+        ), patch.object(
             dlpplayer.subprocess, "run", side_effect=[failure, success]
         ) as run:
             info = dlpplayer.fetch_url_video_info(
                 "yt-dlp.exe", "https://www.youtube.com/watch?v=video"
             )
-
         self.assertEqual(info.title, "Video")
         self.assertEqual(
             [
@@ -1325,6 +1462,18 @@ class VideoInfoCommandTests(unittest.TestCase):
 
 
 class PlaylistEpisodeTests(unittest.TestCase):
+    def setUp(self):
+        cache_state = patch.object(
+            dlpplayer, "LAST_SUCCESSFUL_COOKIE_BROWSER", None
+        )
+        cache_state.start()
+        self.addCleanup(cache_state.stop)
+        cache_writer = patch.object(
+            dlpplayer, "_cache_last_successful_cookie_browser"
+        )
+        cache_writer.start()
+        self.addCleanup(cache_writer.stop)
+
     def test_episode_dropdown_shows_up_to_thirty_rows(self):
         self.assertEqual(dlpplayer._episode_dropdown_height(1), 1)
         self.assertEqual(dlpplayer._episode_dropdown_height(12), 12)

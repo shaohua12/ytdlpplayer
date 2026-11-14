@@ -186,21 +186,26 @@ Download options:
 - `--play`: send the downloaded file to the shared MPV session after download
   succeeds.
 - `--cookie-browser NAME`: browser to read cookies from for this download;
-  defaults to the `cookie_browser` setting (Chrome).
-- `--cookie-profile NAME_OR_PATH`: use this profile for the first cookie
-  attempt; the browser's default profile otherwise.
+  defaults to the last successful browser, then the `cookie_browser` setting.
+- `--cookie-profile NAME_OR_PATH`: use this profile for the configured or
+  explicitly selected browser; the browser's default profile otherwise.
 - `--no-cookies`: do not read browser cookies.
 - `--yt-dlp PATH`, `--ffmpeg PATH`, `--mpv PATH`: override tool locations;
   `--ffmpeg` may be an executable or its containing directory.
 - `--node PATH`: Node.js executable passed to yt-dlp when it supports
   `--js-runtimes`. GUI YouTube actions use `DLPPLAYER_NODE` or `node_path`.
 
-Direct yt-dlp requests try the configured browser first, then retry in Chrome,
-Edge, Firefox, and Brave order. MPV cannot retry cookie sources itself, so
-DLPPlayer gives it the first usable source instead: the configured browser,
-then the same order. A Chromium browser is skipped when its cookie database is
-locked by a running browser or uses app-bound encryption (`v20` cookies), which
-yt-dlp cannot decrypt. If no source is usable, MPV starts without cookies.
+Without a cache, direct yt-dlp requests try the configured browser first, then
+Chrome, Edge, Firefox, and Brave order. With a cache, they try the saved
+`last_successful_cookie_browser` first; if it fails, DLPPlayer clears it and
+checks the browsers in default order. An explicit `--cookie-browser` value
+overrides the cache for that download. MPV cannot retry cookie sources itself,
+so DLPPlayer gives it the first usable source: cached browser, configured
+browser, then the same order. Successful yt-dlp cookie sources update
+`last_successful_cookie_browser` in `dlpplayer.json`. A Chromium browser is
+skipped when its cookie database is locked by a running browser or uses
+app-bound encryption (`v20` cookies), which yt-dlp cannot decrypt. If no source
+is usable, MPV starts without cookies.
 
 DLPPlayer reads `dlpplayer.json` beside `dlpplayer.py` at startup. The file
 sets `max_allowed_resolution` to `1080` by default; change it to another positive
@@ -208,10 +213,12 @@ height (for example `720`) to cap yt-dlp selections for playback and downloads.
 Set it to `null` to remove the height cap. The download `-f` option still
 provides a per-command override.
 
-`cookie_browser` selects the browser yt-dlp and MPV read cookies from; it
-defaults to `chrome`. Set it to another yt-dlp browser name such as `edge`,
-`firefox`, or `brave`. The CLI `--cookie-browser` option overrides it for one
-download, and `--cookie-profile` selects a non-default profile.
+`cookie_browser` selects the preferred browser when no successful source is
+cached; it defaults to `chrome`. Set it to another yt-dlp browser name such as
+`edge`, `firefox`, or `brave`. Successful yt-dlp cookie use updates the separate
+`last_successful_cookie_browser` value automatically. The CLI `--cookie-browser`
+option overrides the cached browser for one download, and `--cookie-profile`
+selects a non-default profile.
 
 Tool locations are configurable with `yt_dlp_path`, `mpv_path`, `ffmpeg_path`,
 and `node_path`. Values may be absolute paths or paths relative to
